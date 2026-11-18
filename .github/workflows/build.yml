@@ -27,7 +27,7 @@ env:
 jobs:
   build:
     name: Build XNU, UEFI Firmware, and boot.img
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 120
 
     steps:
