@@ -15,6 +15,11 @@ on:
         description: "Enable B2LTouchDxe in firmware profile"
         type: boolean
         default: true
+      runner:
+        description: "Runner label to build on (hosted macOS runners are capacity-starved)"
+        required: false
+        type: string
+        default: macos-15-intel
 
 env:
   XNU_COMMIT: ac9718fb1af618d5ce8678d0dc6e8a58f252216f
@@ -27,7 +32,7 @@ env:
 jobs:
   build:
     name: Build XNU, UEFI Firmware, and boot.img
-    runs-on: macos-15-intel
+    runs-on: ${{ inputs.runner || 'macos-15-intel' }}
     timeout-minutes: 120
 
     steps:
