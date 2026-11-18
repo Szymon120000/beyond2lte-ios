@@ -23,3 +23,8 @@ mkdir -p "$build_dir"
 "${CC:-clang}" -std=c11 -Wall -Wextra -Werror -I"$repo_root/common/smp" -I"$repo_root/common/memory" -fsanitize=address,undefined \
   "$repo_root/tests/gic_target_test.c" -o "$build_dir/gic_target_test"
 "$build_dir/gic_target_test"
+
+"${CC:-clang}" -std=c11 -Wall -Wextra -Werror -fsanitize=address,undefined \
+  -I"$repo_root/xnu-overlay/iokit/Kernel/arm" \
+  "$repo_root/tests/layer_blit_test.c" -o "$build_dir/layer_blit_test"
+"$build_dir/layer_blit_test"

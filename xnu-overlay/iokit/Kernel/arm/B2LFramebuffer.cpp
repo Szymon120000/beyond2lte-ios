@@ -10,7 +10,9 @@
  *   6 wait; 7 display id; 8 dimensions; 18 main; 28 dot pitch;
  *   72 notification control. Unsupported selectors return Unsupported.
  *
- * BGRA layers are copied without resizing. A 60 Hz software timer supplies
+ * Four-byte layers are copied into the panel memory. Source and destination
+ * rectangles may differ (nearest-neighbour scale) and non-BGRA channel orders
+ * are permuted on the fly. A 60 Hz software timer supplies
  * notification type 5, not hardware scanout synchronization. After the first
  * accepted copy only console drawing is suppressed; persistent logging and
  * panic drawing remain active. GPU acceleration is not provided.
@@ -212,7 +214,7 @@ get32(const uint8_t *p, uint32_t off)
 	return v;
 }
 
-static uint32_t b2l_fb_swaps_logged;
+static uint32_t b2l_fb_swaps_logged, b2l_fb_skips_logged;
 static uint64_t b2l_fb_received, b2l_fb_copied, b2l_fb_disabled, b2l_fb_missing,
     b2l_fb_unsupported, b2l_fb_bounds;
 static uint32_t b2l_fb_last_swap, b2l_fb_last_mask, b2l_fb_last_disabled,
@@ -280,16 +282,22 @@ AppleCLCD::swap(const uint8_t *rec)
 			continue;
 		}
 		B2LSurface *s = b2l_surface_copy(id);
-		if (b2l_fb_swaps_logged < 16) {
-			b2l_fb_swaps_logged++;
-			IOLog("B2L FB: swap %u layer %u surface %u %ux%u fmt 0x%x bpr %u a %d,%d %ux%u b %d,%d %dx%d\n",
-			    swap_id, layer, id, s ? s->width : 0, s ? s->height : 0,
-			    s ? s->pixelFormat : 0, s ? s->bytesPerRow : 0, sx, sy, get32(a, 8),
-			    get32(a, 12), dx, dy, w, h);
-		}
 		if (s == NULL) {
 			__atomic_fetch_add(&b2l_fb_missing, 1, __ATOMIC_RELAXED);
+			if (b2l_fb_skips_logged < 32) {
+				b2l_fb_skips_logged++;
+				IOLog("B2L FB SKIP: swap %u layer %u surface %u is not registered\n",
+				    swap_id, layer, id);
+			}
 			continue;
+		}
+		int swz = b2l_blit_swizzle(s->pixelFormat);
+		if (b2l_fb_swaps_logged < 32) {
+			b2l_fb_swaps_logged++;
+			IOLog("B2L FB: swap %u layer %u surface %u %ux%u fmt 0x%x bpr %u bpe %u %ux%u a %d,%d %ux%u b %d,%d %dx%d\n",
+			    swap_id, layer, id, s->width, s->height, s->pixelFormat,
+			    s->bytesPerRow, s->bytesPerElement, s->elementWidth, s->elementHeight,
+			    sx, sy, get32(a, 8), get32(a, 12), dx, dy, w, h);
 		}
 		if (s == fSurface) {
 			OSSafeReleaseNULL(s);
@@ -298,13 +306,12 @@ AppleCLCD::swap(const uint8_t *rec)
 		__atomic_store_n(&b2l_fb_last_id, id, __ATOMIC_RELAXED);
 		__atomic_store_n(&b2l_fb_last_format, s->pixelFormat, __ATOMIC_RELAXED);
 		uintptr_t src = s->kernelAddress();
-        if(src && s->memory && s->bytesPerElement==4 && s->elementWidth==1 && s->elementHeight==1 &&
-            s->pixelFormat==B2L_FB_FORMAT_BGRA) {
+        if(src && s->memory && swz >= 0 && s->bytesPerElement==4 && s->elementWidth==1 && s->elementHeight==1) {
             if(w<=0||h<=0){w=(int32_t)s->width;h=(int32_t)s->height;}
             IOLockLock(fLock);
-            int shown=b2l_blit((void*)fPixels,(uint64_t)fRowBytes*fHeight,fWidth,fHeight,fRowBytes,
+            int shown=b2l_blit_layer((void*)fPixels,(uint64_t)fRowBytes*fHeight,fWidth,fHeight,fRowBytes,
                 (const void*)src,s->memory->getLength(),s->width,s->height,s->bytesPerRow,s->offset,
-                sx,sy,dx,dy,w,h);
+                sx,sy,(int32_t)get32(a,8),(int32_t)get32(a,12),dx,dy,w,h,swz);
             if(shown&&!fConsolePaused){b2l_early_gui_present();fConsolePaused=true;IOLog("B2L FB: first IOSurface frame copied to physical scanout\n");}
             __asm__ volatile("dsb sy":::"memory");
             IOLockUnlock(fLock);
@@ -312,9 +319,21 @@ AppleCLCD::swap(const uint8_t *rec)
                 __atomic_fetch_add(&b2l_fb_copied, 1, __ATOMIC_RELAXED);
             } else {
                 __atomic_fetch_add(&b2l_fb_bounds, 1, __ATOMIC_RELAXED);
+                if (b2l_fb_skips_logged < 32) {
+                    b2l_fb_skips_logged++;
+                    IOLog("B2L FB SKIP: swap %u layer %u surface %u %ux%u a %d,%d %ux%u b %d,%d %dx%d rejected\n",
+                        swap_id, layer, id, s->width, s->height, sx, sy,
+                        get32(a, 8), get32(a, 12), dx, dy, w, h);
+                }
             }
         } else {
             __atomic_fetch_add(&b2l_fb_unsupported, 1, __ATOMIC_RELAXED);
+            if (b2l_fb_skips_logged < 32) {
+                b2l_fb_skips_logged++;
+                IOLog("B2L FB SKIP: swap %u layer %u surface %u unsupported fmt 0x%x bpe %u %ux%u\n",
+                    swap_id, layer, id, s->pixelFormat, s->bytesPerElement,
+                    s->elementWidth, s->elementHeight);
+            }
         }
 
 		s->release();
