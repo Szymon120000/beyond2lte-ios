@@ -33,6 +33,7 @@
 
 #define FG_STATUS          0x00
 #define FG_SOC             0x06
+#define FG_TEMP            0x08
 #define FG_VCELL           0x09
 #define FG_CURRENT         0x0A
 
