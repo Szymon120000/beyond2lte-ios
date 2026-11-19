@@ -84,8 +84,9 @@ class B2LPower : public IOService {
         w(0,8);w(8,0x00ffffff);
         w(0x40,r(0x40)|(1u<<31));
     }
-    bool message(uint8_t addr,uint8_t *buf,unsigned n,bool read);
+    bool message(uint8_t addr,uint8_t *buf,unsigned n,bool read,bool stop);
     bool readRegs(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n);
+    bool readRegsCombined(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n);
     bool writeReg(uint8_t addr,uint8_t reg,uint8_t value);
     bool readWord(uint8_t addr,uint8_t reg,uint16_t *value);
     void probe();
@@ -102,9 +103,10 @@ public:
 OSDefineMetaClassAndStructors(B2LPower,IOService);
 
 /* Same bounded USI-I2C-v2 sequence as B2LInput::message(). The slave
- * address lives in bits 10..16 of register 0x70; unlike the touch driver
- * we have two slaves, so the field must be cleared before it is set. */
-bool B2LPower::message(uint8_t addr,uint8_t *buf,unsigned n,bool read){
+ * address lives in I2C_ADDR[19:10] of register 0x70; unlike the touch
+ * driver we have two slaves, so the field must be cleared before it is set.
+ * stop=false leaves the bus held so a repeated start can follow. */
+bool B2LPower::message(uint8_t addr,uint8_t *buf,unsigned n,bool read,bool stop){
     if(!buf||!n||n>16)return false;
     const unsigned budgetUS=timeoutUS;
     const uint64_t begin=uptimeUS();
@@ -113,9 +115,12 @@ bool B2LPower::message(uint8_t addr,uint8_t *buf,unsigned n,bool read){
     w(4,3u|(level<<4)|(level<<16));
     w(0,(r(0)&~0xc0u)|8u|(read?0x40u:0x80u));
     w(0x40,r(0x40)|(1u<<31));
-    w(0x70,(r(0x70)&~0x00f00000u&~(0x7fu<<10))|((uint32_t)addr<<10));
+    /* I2C_ADDR[19:10] holds the 7-bit slave address (i2c-exynos5.c clears
+     * the whole 0x3ff field). Clear it completely so no leftover address
+     * bits from the bootloader survive between the two slaves. */
+    w(0x70,(r(0x70)&~0x000ffc00u)|(((uint32_t)addr&0x7fu)<<10));
     w(0x24,r(0x24));w(0x20,0x80);
-    w(0x44,(r(0x44)&~0x8003ffffu)|0x80020000u|(read?0x10000u:0)|n);
+    w(0x44,(r(0x44)&~0x8003ffffu)|0x80000000u|(stop?0x20000u:0)|(read?0x10000u:0)|n);
     unsigned at=0;
     while(uptimeUS()-begin<budgetUS){
         unsigned before=at;
@@ -143,16 +148,23 @@ bool B2LPower::message(uint8_t addr,uint8_t *buf,unsigned n,bool read){
 }
 
 /* Register read: latched register address write followed by the data
- * transfer, exactly like B2LInput::command(). */
+ * transfer, exactly like B2LInput::command(). The MAX PMICs also accept the
+ * combined form (register address without STOP, repeated start into the
+ * read); probe() tries that when the split form returns a dead-bus pattern. */
 bool B2LPower::readRegs(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n){
     resetController();
-    if(!message(addr,&reg,1,false))return false;
-    return message(addr,buf,n,true);
+    if(!message(addr,&reg,1,false,true))return false;
+    return message(addr,buf,n,true,true);
+}
+bool B2LPower::readRegsCombined(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n){
+    resetController();
+    if(!message(addr,&reg,1,false,false))return false;
+    return message(addr,buf,n,true,true);
 }
 bool B2LPower::writeReg(uint8_t addr,uint8_t reg,uint8_t value){
     uint8_t pair[2]={reg,value};
     resetController();
-    return message(addr,pair,2,false);
+    return message(addr,pair,2,false,true);
 }
 bool B2LPower::readWord(uint8_t addr,uint8_t reg,uint16_t *value){
     uint8_t d[2]={0,0};
@@ -164,20 +176,36 @@ bool B2LPower::readWord(uint8_t addr,uint8_t reg,uint16_t *value){
 void B2LPower::probe(){
     ++probeAttempts;
     uint8_t cnfg00=0,cnfg02=0,cnfg06=0,cnfg09=0,intok=0,details=0;
-    bool ok00=readRegs(B2L_CHG_ADDR,CHG_CNFG_00,&cnfg00,1);
-    bool ok02=readRegs(B2L_CHG_ADDR,CHG_CNFG_02,&cnfg02,1);
-    bool ok06=readRegs(B2L_CHG_ADDR,CHG_CNFG_06,&cnfg06,1);
-    bool ok09=readRegs(B2L_CHG_ADDR,CHG_CNFG_09,&cnfg09,1);
-    bool okb2=readRegs(B2L_CHG_ADDR,CHG_INT_OK,&intok,1);
-    bool okb3=readRegs(B2L_CHG_ADDR,CHG_DETAILS_00,&details,1);
-    chargerReady=ok00&&ok02&&ok06&&ok09;
-    /* A dead bus reads back one repeated value. Never program a charger
-     * whose configuration registers cannot be distinguished. */
-    if(chargerReady && cnfg00==cnfg02 && cnfg02==cnfg06 && cnfg06==cnfg09 &&
-       (cnfg00==0x00||cnfg00==0xFF))
-        chargerReady=false;
-    IOLog("B2L POWER PROBE: attempt=%u ok=%d%d%d%d%d%d cnfg00=0x%02x cnfg02=0x%02x cnfg06=0x%02x cnfg09=0x%02x int_ok=0x%02x details=0x%02x\n",
-        probeAttempts,ok00,ok02,ok06,ok09,okb2,okb3,
+    bool ok00=false,ok02=false,ok06=false,ok09=false,okb2=false,okb3=false;
+    bool combined=false;
+    for(unsigned pass=0;pass<2;++pass){
+        combined=(pass==1);
+        cnfg00=cnfg02=cnfg06=cnfg09=intok=details=0;
+        if(combined){
+            ok00=readRegsCombined(B2L_CHG_ADDR,CHG_CNFG_00,&cnfg00,1);
+            ok02=readRegsCombined(B2L_CHG_ADDR,CHG_CNFG_02,&cnfg02,1);
+            ok06=readRegsCombined(B2L_CHG_ADDR,CHG_CNFG_06,&cnfg06,1);
+            ok09=readRegsCombined(B2L_CHG_ADDR,CHG_CNFG_09,&cnfg09,1);
+            okb2=readRegsCombined(B2L_CHG_ADDR,CHG_INT_OK,&intok,1);
+            okb3=readRegsCombined(B2L_CHG_ADDR,CHG_DETAILS_00,&details,1);
+        }else{
+            ok00=readRegs(B2L_CHG_ADDR,CHG_CNFG_00,&cnfg00,1);
+            ok02=readRegs(B2L_CHG_ADDR,CHG_CNFG_02,&cnfg02,1);
+            ok06=readRegs(B2L_CHG_ADDR,CHG_CNFG_06,&cnfg06,1);
+            ok09=readRegs(B2L_CHG_ADDR,CHG_CNFG_09,&cnfg09,1);
+            okb2=readRegs(B2L_CHG_ADDR,CHG_INT_OK,&intok,1);
+            okb3=readRegs(B2L_CHG_ADDR,CHG_DETAILS_00,&details,1);
+        }
+        chargerReady=ok00&&ok02&&ok06&&ok09;
+        /* A dead bus reads back one repeated value. Never program a charger
+         * whose configuration registers cannot be distinguished. */
+        if(chargerReady && cnfg00==cnfg02 && cnfg02==cnfg06 && cnfg06==cnfg09 &&
+           (cnfg00==0x00||cnfg00==0xFF))
+            chargerReady=false;
+        if(chargerReady)break;
+    }
+    IOLog("B2L POWER PROBE: attempt=%u path=%s ok=%d%d%d%d%d%d cnfg00=0x%02x cnfg02=0x%02x cnfg06=0x%02x cnfg09=0x%02x int_ok=0x%02x details=0x%02x\n",
+        probeAttempts,combined?"combined":"split",ok00,ok02,ok06,ok09,okb2,okb3,
         cnfg00,cnfg02,cnfg06,cnfg09,intok,details);
     if(chargerReady)configure(cnfg00,cnfg02,cnfg06,cnfg09);
     sample();
