@@ -42,6 +42,9 @@
 #define B2L_CHG_ILIM_STEP_MA 25u
 #define B2L_CHG_ILIM_USB_MA  1500u
 #define B2L_CHG_ILIM_SAFE_MA 500u
+/* Initial fast-charge current. The charger's own input regulation and the
+ * thermal guard below keep this from being sustained when it is not safe. */
+#define B2L_CHG_CC_MA        1500u
 /* CHG_CNFG_06 WDTCLR[1:0] = 1 kicks the charger watchdog. */
 #define B2L_CHG_WDT_KICK     0x01u
 /* CHG_CNFG_06 DIS_AICL: when set the input current is not reduced
@@ -91,6 +94,8 @@ class B2LPower : public IOService {
     bool readWord(uint8_t addr,uint8_t reg,uint16_t *value);
     void probe();
     void configure(uint8_t cnfg00,uint8_t cnfg02,uint8_t cnfg06,uint8_t cnfg09);
+    void setChargeCurrent(unsigned ma);
+    void thermalGuard();
     void sample();
     void publish();
     void kickWatchdog();
@@ -237,10 +242,35 @@ void B2LPower::configure(uint8_t cnfg00,uint8_t cnfg02,uint8_t cnfg06,uint8_t cn
         }
     }
     kickWatchdog();
+    /* Android/LK usually leave the charger at a conservative USB charge
+     * current. Raise it once, then let the thermal guard in thermalGuard()
+     * pull it back if the pack warms up. */
+    if(ccMa<1000){setChargeCurrent(B2L_CHG_CC_MA);ccMa=B2L_CHG_CC_MA;}
     IOLog("B2L POWER: ready mode=0x%x chgin_lim=%u mA charge_current=%u mA aicl=%s wdt=%s\n",
         mode,(currentSetting+1)*B2L_CHG_ILIM_STEP_MA,ccMa,
         (cnfg06&B2L_CHG_DIS_AICL)?"off":"on",
         (cnfg00&0x10)?"on":"off");
+}
+
+/* CHG_CNFG_02[5:0] is the fast-charge current in 50 mA steps (0..2 = 100 mA);
+ * [7:6] belong to OTG and must be preserved. */
+void B2LPower::setChargeCurrent(unsigned ma){
+    uint8_t cnfg02=0;
+    if(!readRegs(B2L_CHG_ADDR,CHG_CNFG_02,&cnfg02,1))return;
+    unsigned reg=ma/50u;
+    if(reg<3)reg=3;
+    if(reg>0x3fu)reg=0x3fu;
+    if((cnfg02&0x3f)==reg)return;
+    unsigned was=(cnfg02&0x3f)<=2?100u:(unsigned)(cnfg02&0x3f)*50u;
+    if(writeReg(B2L_CHG_ADDR,CHG_CNFG_02,(uint8_t)((cnfg02&0xc0)|reg)))
+        IOLog("B2L POWER: charge current %u mA -> %u mA\n",was,reg*50u);
+}
+
+/* There is no Apple battery driver doing JEITA, so the throttle lives here:
+ * above 45 C drop to a trickle-safe current, above 55 C to the minimum. */
+void B2LPower::thermalGuard(){
+    if(tempTenths>550)setChargeCurrent(100);
+    else if(tempTenths>450)setChargeCurrent(500);
 }
 
 void B2LPower::kickWatchdog(){
@@ -311,6 +341,7 @@ void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
      * without touching the bus on every tick. */
     if(s->ticks%2==0)s->kickWatchdog();
     s->sample();
+    s->thermalGuard();
     s->publish();
     if(s->ticks%12==0){
         int tt=s->tempTenths,at=tt<0?-tt:tt;
