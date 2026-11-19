@@ -38,8 +38,10 @@
 
 /* CHG_CNFG_00 MODE[3:0]: 5/6/7 keep the buck on and the charger enabled. */
 #define B2L_CHG_MODE_BUCK_CHG 0x05
-/* CHG_CNFG_09 CHGIN_LIM[6:0] steps of 25 mA, value+1 steps. */
+/* CHG_CNFG_09 bit 7 enables charging; bits[6:0] are CHGIN_LIM in 25 mA steps
+ * (value+1 steps). */
 #define B2L_CHG_ILIM_STEP_MA 25u
+#define B2L_CHG_EN           0x80u
 #define B2L_CHG_ILIM_USB_MA  1500u
 #define B2L_CHG_ILIM_SAFE_MA 500u
 /* Initial fast-charge current. The charger's own input regulation and the
@@ -230,15 +232,16 @@ void B2LPower::configure(uint8_t cnfg00,uint8_t cnfg02,uint8_t cnfg06,uint8_t cn
     unsigned desired=(cnfg06&B2L_CHG_DIS_AICL)?B2L_CHG_ILIM_SAFE_MA:B2L_CHG_ILIM_USB_MA;
     unsigned setting=desired/B2L_CHG_ILIM_STEP_MA-1u;
     unsigned currentSetting=cnfg09&0x7f;
-    if(currentSetting<setting){
-        /* CHGIN_LIM is one field; bit 7 is left exactly as the bootloader
-         * set it. Only ever raise the limit, never lower a negotiated one. */
-        uint8_t want=(uint8_t)((cnfg09&0x80)|setting);
+    if(!(cnfg09&B2L_CHG_EN)||currentSetting<setting){
+        /* CHGIN_LIM[6:0] is the limit and bit 7 is CHG_EN. Only ever raise
+         * the limit; AICL may have reduced it below what we would ask for. */
+        uint8_t want=(uint8_t)(B2L_CHG_EN|(currentSetting<setting?setting:currentSetting));
         if(writeReg(B2L_CHG_ADDR,CHG_CNFG_09,want)){
-            IOLog("B2L POWER: CHGIN_LIM %u mA -> %u mA\n",
+            IOLog("B2L POWER: CHGIN_LIM %u mA -> %u mA%s\n",
                 (currentSetting+1)*B2L_CHG_ILIM_STEP_MA,
-                (setting+1)*B2L_CHG_ILIM_STEP_MA);
-            currentSetting=setting;
+                ((want&0x7f)+1)*B2L_CHG_ILIM_STEP_MA,
+                (cnfg09&B2L_CHG_EN)?"":" (CHG_EN reasserted)");
+            currentSetting=want&0x7f;
         }
     }
     kickWatchdog();
@@ -246,8 +249,8 @@ void B2LPower::configure(uint8_t cnfg00,uint8_t cnfg02,uint8_t cnfg06,uint8_t cn
      * current. Raise it once, then let the thermal guard in thermalGuard()
      * pull it back if the pack warms up. */
     if(ccMa<1000){setChargeCurrent(B2L_CHG_CC_MA);ccMa=B2L_CHG_CC_MA;}
-    IOLog("B2L POWER: ready mode=0x%x chgin_lim=%u mA charge_current=%u mA aicl=%s wdt=%s\n",
-        mode,(currentSetting+1)*B2L_CHG_ILIM_STEP_MA,ccMa,
+    IOLog("B2L POWER: ready mode=0x%x chgin_lim=%u mA chg_en=%d charge_current=%u mA aicl=%s wdt=%s\n",
+        mode,(currentSetting+1)*B2L_CHG_ILIM_STEP_MA,(cnfg09&B2L_CHG_EN)?1:0,ccMa,
         (cnfg06&B2L_CHG_DIS_AICL)?"off":"on",
         (cnfg00&0x10)?"on":"off");
 }
