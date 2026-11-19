@@ -161,6 +161,9 @@ AppleCLCD::start(IOService *provider)
 }
 
 static void b2l_fb_progress(uint64_t vsync);
+/* Written by the vsync timer, read by the user client for late-traffic
+ * diagnostics; defined with the other counters below the timer. */
+static uint64_t b2l_fb_vsync_seen;
 
 void
 AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
@@ -173,6 +176,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
 		(uint32_t)now, (uint32_t)(now >> 32),
 		0, 0,
 	};
+	__atomic_store_n(&b2l_fb_vsync_seen, count, __ATOMIC_RELAXED);
 
 	IOLockLock(fb->fLock);
 	for (unsigned int i = 0; i < fb->fClients->getCount(); i++) {
@@ -215,6 +219,11 @@ get32(const uint8_t *p, uint32_t off)
 static uint32_t b2l_fb_swaps_logged;
 static uint64_t b2l_fb_received, b2l_fb_copied, b2l_fb_disabled, b2l_fb_missing,
     b2l_fb_unsupported, b2l_fb_bounds;
+/* Pacing and late-traffic evidence. After the third swap nothing calls
+ * SwapEnd again for the rest of the session, so the next boot has to answer
+ * whether the client is still talking to us at all and whether its swap
+ * records are being rejected. */
+static uint64_t b2l_fb_waits, b2l_fb_ends, b2l_fb_end_bad, b2l_fb_late;
 static uint32_t b2l_fb_last_swap, b2l_fb_last_mask, b2l_fb_last_disabled,
     b2l_fb_last_id, b2l_fb_last_format;
 
@@ -237,6 +246,11 @@ b2l_fb_progress(uint64_t vsync)
 	    __atomic_load_n(&b2l_fb_last_disabled, __ATOMIC_RELAXED),
 	    __atomic_load_n(&b2l_fb_last_id, __ATOMIC_RELAXED),
 	    __atomic_load_n(&b2l_fb_last_format, __ATOMIC_RELAXED));
+	b2l_diag_record("B2L FB TRAFFIC: vsync=%llu ends=%llu bad=%llu waits=%llu\n",
+	    (unsigned long long)vsync,
+	    (unsigned long long)__atomic_load_n(&b2l_fb_ends, __ATOMIC_RELAXED),
+	    (unsigned long long)__atomic_load_n(&b2l_fb_end_bad, __ATOMIC_RELAXED),
+	    (unsigned long long)__atomic_load_n(&b2l_fb_waits, __ATOMIC_RELAXED));
 }
 
 /* Copy each enabled layer's surface into the panel memory (no scaling). */
@@ -399,6 +413,16 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
     __unused void *reference)
 {
     if (args == NULL) return kIOReturnBadArgument;
+    /* After the third frame the compositor stops submitting. Record the
+     * first calls that arrive once the stall window is open, so the next
+     * boot shows whether it still talks to this user client at all. */
+    if (__atomic_load_n(&b2l_fb_vsync_seen, __ATOMIC_RELAXED) > 18000 &&
+        __atomic_fetch_add(&b2l_fb_late, 1, __ATOMIC_RELAXED) < 40) {
+        b2l_diag_record("B2L FB LATE: pid=%d selector=%u in=%u/%llu out=%u/%llu\n",
+            proc_selfpid(), selector, args->scalarInputCount,
+            (unsigned long long)args->structureInputSize,
+            args->scalarOutputCount, (unsigned long long)args->structureOutputSize);
+    }
     static unsigned samples;
     if(__atomic_fetch_add(&samples,1,__ATOMIC_RELAXED)<64)
         b2l_diag_record("B2L FB CALL: pid=%d selector=%u scalar_in=%u struct_in=%llu struct_out=%llu\n",
@@ -483,8 +507,15 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		break;
 	case kB2LFBSwapEnd: {
 		uint8_t rec[B2L_FB_SWAP_REC_SIZE];
+		__atomic_fetch_add(&b2l_fb_ends, 1, __ATOMIC_RELAXED);
 		if (args->structureInputDescriptor != NULL ||
 		    args->structureInput == NULL || args->structureInputSize != B2L_FB_SWAP_REC_SIZE) {
+			if (__atomic_fetch_add(&b2l_fb_end_bad, 1, __ATOMIC_RELAXED) < 8) {
+				b2l_diag_record("B2L FB ENDBAD: pid=%d descriptor=%d input=%d size=%llu\n",
+				    proc_selfpid(), args->structureInputDescriptor != NULL,
+				    args->structureInput != NULL,
+				    (unsigned long long)args->structureInputSize);
+			}
 			ret = kIOReturnBadArgument;
 			break;
 		}
@@ -523,6 +554,12 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
 		}
 		break;
 	case kB2LFBSwapWait:
+		/* The native wait returns once the frame that carries this swap is
+		 * on the panel; the CPU blit is already done when SwapEnd returns,
+		 * so pacing one 60 Hz interval gives the client the same cadence
+		 * instead of an immediate reply. Bounded: no lock is held here. */
+		__atomic_fetch_add(&b2l_fb_waits, 1, __ATOMIC_RELAXED);
+		IOSleep(16);
 		break;
     default: ret=kIOReturnUnsupported;break;
 	}
