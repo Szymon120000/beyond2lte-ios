@@ -58,7 +58,7 @@ class B2LPower : public IOService {
     bool chargerReady, gaugeReady;
     unsigned timeoutUS, transferFailures, ticks, probeAttempts;
     unsigned socTenths, vcellMv;
-    int currentMa;
+    int currentMa, tempTenths;
     uint16_t fgStatus, fgTemp;
     static uint64_t uptimeUS(){
         uint64_t ns=0;
@@ -222,13 +222,31 @@ void B2LPower::kickWatchdog(){
         (uint8_t)((cnfg06&~0x03u)|B2L_CHG_WDT_KICK));
 }
 
+/* TEMPERATURE_REG is 16-bit fixed point: high byte whole degrees Celsius,
+ * low byte 39/10 m°C units. Return whole deci-degrees, matching the
+ * Samsung driver's sign handling. */
+static int b2l_fg_temp_tenths(uint16_t raw){
+    uint8_t lo=(uint8_t)(raw&0xff),hi=(uint8_t)(raw>>8);
+    int t;
+    if(hi&0x80){
+        t=((~hi)&0xff)+1;
+        t*=(-1000);
+        t-=(-(int)lo)*39/10;
+    }else{
+        t=(hi&0x7f);
+        t*=1000;
+        t+=lo*39/10;
+    }
+    return t/100;
+}
+
 void B2LPower::sample(){
     uint16_t soc=0,vcell=0,current=0,temp=0,status=0;
     bool okSoc=readWord(B2L_FG_ADDR,FG_SOC,&soc);
     bool okCell=readWord(B2L_FG_ADDR,FG_VCELL,&vcell);
     bool okCurrent=readWord(B2L_FG_ADDR,FG_CURRENT,&current);
-    bool okTemp=readWord(B2L_FG_ADDR,FG_TEMP,&temp);
-    bool okStatus=readWord(B2L_FG_ADDR,FG_STATUS,&status);
+    readWord(B2L_FG_ADDR,FG_TEMP,&temp);
+    readWord(B2L_FG_ADDR,FG_STATUS,&status);
     gaugeReady=okSoc&&okCell&&okCurrent;
     if(!gaugeReady)return;
     /* Scale factors: SOC 1/256 %, VCELL 78.125 uV, CURRENT 156.25 uA with
@@ -240,6 +258,7 @@ void B2LPower::sample(){
      * state: a present pack is between ~2.5 V and 4.5 V. */
     if(mv<2500||mv>4500){gaugeReady=false;return;}
     socTenths=socT;vcellMv=mv;currentMa=ma;
+    tempTenths=b2l_fg_temp_tenths(temp);
     fgStatus=status;fgTemp=temp;
 }
 
@@ -264,10 +283,13 @@ void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
     if(s->ticks%2==0)s->kickWatchdog();
     s->sample();
     s->publish();
-    if(s->ticks%12==0)
-        IOLog("B2L POWER: soc=%u.%u%% vcell=%u mV current=%d mA chg_ok=%d fg_ok=%d\n",
+    if(s->ticks%12==0){
+        int tt=s->tempTenths,at=tt<0?-tt:tt;
+        IOLog("B2L POWER: soc=%u.%u%% vcell=%u mV current=%d mA temp=%s%d.%d C status=0x%04x chg_ok=%d fg_ok=%d\n",
             s->socTenths/10,s->socTenths%10,s->vcellMv,s->currentMa,
+            tt<0?"-":"",at/10,at%10,s->fgStatus,
             s->chargerReady,s->gaugeReady);
+    }
 }
 
 bool B2LPower::start(IOService *provider){
