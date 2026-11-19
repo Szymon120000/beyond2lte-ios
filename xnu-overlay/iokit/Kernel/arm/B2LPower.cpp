@@ -251,7 +251,8 @@ void B2LPower::sample(){
     if(!gaugeReady)return;
     /* Scale factors: SOC 1/256 %, VCELL 78.125 uV, CURRENT 156.25 uA with
      * the 5 mOhm sense resistor (fg_resistor=2). */
-    unsigned socT=(unsigned)(((uint32_t)soc*100u)/256u);
+    unsigned socT=(unsigned)(((uint32_t)soc*10u)/256u);
+    if(socT>1000)socT=1000;
     unsigned mv=(unsigned)(((uint32_t)vcell*5u)/64u);
     int ma=((int)(int16_t)current)*5/16;
     /* Reject implausible frames instead of reporting garbage as battery
