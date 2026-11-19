@@ -33,7 +33,7 @@ jobs:
   build:
     name: Build XNU, UEFI Firmware, and boot.img
     runs-on: ${{ inputs.runner || 'macos-15-intel' }}
-    timeout-minutes: 120
+    timeout-minutes: 350
 
     steps:
       - name: Checkout beyond2lte-ios
@@ -48,10 +48,28 @@ jobs:
           echo "MU_WORK_TREE=$GITHUB_WORKSPACE/out/mu" >> "$GITHUB_ENV"
           echo "BUILD_JOBS=$(sysctl -n hw.ncpu)" >> "$GITHUB_ENV"
 
+      - name: Cache Homebrew bottle downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/Homebrew
+          key: b2l-brew-dl-${{ runner.os }}-${{ runner.arch }}-v1
+
       - name: Install toolchain dependencies
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+          HOMEBREW_NO_ENV_HINTS: "1"
+          HOMEBREW_NO_ANALYTICS: "1"
         run: |
-          brew update
-          brew install llvm lld nasm acpica rsync jq pigz blacktop/tap/ipsw
+          # Do not run `brew update`: it cost most of a two-hour budget on the
+          # Intel runner before the job hit its timeout in this very step.
+          set -euo pipefail
+          for f in llvm lld nasm acpica rsync jq pigz blacktop/tap/ipsw; do
+            echo "::group::brew install $f"
+            /usr/bin/time -p brew install "$f" || /usr/bin/time -p brew install "$f"
+            echo "::endgroup::"
+          done
+          brew link --overwrite --force llvm lld >/dev/null 2>&1 || true
           LLVM_PREFIX="$(brew --prefix llvm)"
           LLD_PREFIX="$(brew --prefix lld)"
           mkdir -p out/llvm-bin
