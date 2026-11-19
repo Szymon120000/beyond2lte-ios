@@ -61,14 +61,28 @@ jobs:
           HOMEBREW_NO_ENV_HINTS: "1"
           HOMEBREW_NO_ANALYTICS: "1"
         run: |
-          # Do not run `brew update`: it cost most of a two-hour budget on the
-          # Intel runner before the job hit its timeout in this very step.
+          # Do not run `brew update`: it stalled for two hours on the Intel
+          # runner and the job was killed in this step before compiling.
           set -euo pipefail
-          for f in llvm lld nasm acpica rsync jq pigz blacktop/tap/ipsw; do
+          for f in llvm lld nasm acpica rsync jq pigz; do
             echo "::group::brew install $f"
             /usr/bin/time -p brew install "$f" || /usr/bin/time -p brew install "$f"
             echo "::endgroup::"
           done
+          # ipsw is only needed to unpack an IPSW for the userspace image and is
+          # a *cask* in blacktop/tap since the tap became untrusted by default
+          # ("Skipping blacktop/tap because it is not trusted"), so installing it
+          # unconditionally aborted the whole job.
+          if [[ "${{ inputs.build_userspace }}" == "true" ]]; then
+            echo "::group::brew install blacktop/tap/ipsw"
+            brew trust blacktop/tap || true
+            /usr/bin/time -p brew install --cask blacktop/tap/ipsw \
+              || /usr/bin/time -p brew install blacktop/tap/ipsw
+            vendor/bin/ipsw version 2>/dev/null || ipsw version
+            echo "::endgroup::"
+          else
+            echo "ipsw not needed (build_userspace=false)"
+          fi
           brew link --overwrite --force llvm lld >/dev/null 2>&1 || true
           LLVM_PREFIX="$(brew --prefix llvm)"
           LLD_PREFIX="$(brew --prefix lld)"
