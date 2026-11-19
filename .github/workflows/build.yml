@@ -122,6 +122,22 @@ jobs:
           path: out/ipsw/launchd.plist
           key: b2l-launchd-plist-23g90-v1
 
+      # scripts/build-userspace-bootstrap.py aborts with "Missing both
+      # out/ipsw/ios26-userdata.hfs.img and out/ipsw/launchd.plist" when the
+      # IPSW is not extracted, which killed the build even with
+      # build_userspace=false. The launch cache is a verbatim copy of
+      # /System/Library/xpc/launchd.plist from the prepared 23G90 image, so it
+      # can be carried in the repository and cached from then on.
+      - name: Seed the launchd cache when the IPSW is not extracted
+        run: |
+          mkdir -p out/ipsw
+          if [[ -s out/ipsw/launchd.plist ]]; then
+            echo "launchd.plist already present ($(stat -f%z out/ipsw/launchd.plist) bytes)"
+          else
+            cp ci/launchd.plist out/ipsw/launchd.plist
+            echo "seeded out/ipsw/launchd.plist ($(stat -f%z out/ipsw/launchd.plist) bytes)"
+          fi
+
       - name: Download and stage KDK (26.5 build 25F71)
         env:
           KDK_URL: ${{ secrets.KDK_URL }}
@@ -296,7 +312,7 @@ jobs:
           df -h
 
       - name: Save 23G90 launchd.plist cache
-        if: steps.cache-launchd.outputs.cache-hit != 'true' && (inputs.build_userspace == true || (github.event_name == 'push' && contains(github.event.head_commit.message, '[build-userspace]')))
+        if: steps.cache-launchd.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: out/ipsw/launchd.plist
