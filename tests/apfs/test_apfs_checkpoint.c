@@ -43,6 +43,18 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
       scratch,sizeof(scratch),&k,&v)==B2L_APFS_OMAP_OK);
   assert(k.oid==9&&k.xid==3&&v.paddr==5&&v.size==BS);
  }
+ /* Container OMAP object -> OMAP B-tree -> physical object mapping. */
+ {uint8_t *o=disk+3*BS;memset(o,0,BS);w64(o+8,3);w64(o+16,7);w32(o+24,0x4000000b);
+  w32(o+40,0x40000002);w64(o+48,4);seal(o);
+  assert(b2l_apfs_resolve_container_oid(rd,NULL,sizeof(disk),BS,BLOCKS,3,9,10,
+      scratch,sizeof(scratch),scratch+BS/2,BS/2,&k,&v)==B2L_APFS_OMAP_EINVAL);
+  /* Use distinct full-block scratch buffers for the OMAP and tree read. */
+  {uint8_t omap_scratch[BS],tree_scratch[BS];
+   assert(b2l_apfs_resolve_container_oid(rd,NULL,sizeof(disk),BS,BLOCKS,3,9,10,
+       omap_scratch,sizeof(omap_scratch),tree_scratch,sizeof(tree_scratch),&k,&v)==B2L_APFS_OMAP_OK);
+   assert(k.oid==9&&v.paddr==5);
+  }
+ }
  /* Internal root branch descends to a non-root leaf node. */
  {uint8_t *root=disk+7*BS,*leaf=disk+5*BS;
   memset(root,0,BS);w64(root+8,7);w64(root+16,7);w32(root+24,0x40000002);

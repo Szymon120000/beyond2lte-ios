@@ -118,3 +118,26 @@ int b2l_apfs_omap_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
  }
  return B2L_APFS_OMAP_EBOUNDS;
 }
+
+/* Read the container OMAP object from the NXSB physical address, decode its
+ * B-tree root, then resolve a virtual object ID at the requested transaction.
+ */
+int b2l_apfs_resolve_container_oid(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
+ uint32_t bs,uint64_t blocks,uint64_t omap_pa,uint64_t oid,uint64_t max_xid,
+ void *omap_scratch,size_t omap_scratchsz,void *tree_scratch,size_t tree_scratchsz,
+ struct b2l_apfs_omap_key *key,struct b2l_apfs_omap_value *value) {
+ uint8_t *omap=(uint8_t *)omap_scratch; uint64_t off;
+ struct b2l_apfs_omap_info info;
+ int rc;
+ if(!fn||!omap||!tree_scratch||!key||!value||bs<4096||bs>65536||
+    (bs&(bs-1))||omap_scratchsz<bs||blocks>devsz/bs||
+    omap_pa>=blocks||omap_pa>UINT64_MAX/bs) return B2L_APFS_OMAP_EINVAL;
+ off=omap_pa*(uint64_t)bs;
+ if(off>devsz||bs>devsz-off) return B2L_APFS_OMAP_EBOUNDS;
+ if(fn(ctx,off,omap,bs)!=0) return B2L_APFS_OMAP_EINVAL;
+ rc=b2l_apfs_decode_omap(omap,bs,&info);
+ if(rc!=B2L_APFS_OMAP_OK) return rc;
+ if(info.xid>max_xid||info.tree_oid>=blocks) return B2L_APFS_OMAP_EBOUNDS;
+ return b2l_apfs_omap_lookup(fn,ctx,devsz,bs,blocks,info.tree_oid,oid,max_xid,
+     tree_scratch,tree_scratchsz,key,value);
+}
