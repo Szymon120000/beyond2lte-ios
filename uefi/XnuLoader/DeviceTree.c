@@ -173,6 +173,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
         b2l_u32 logical_core=b2l_cpu_cluster_core(cpu_id);
         prop(&w, &cpu, "cluster-core-id", &logical_core, 4);
         prop(&w, &cpu, "cluster-type", &cluster_type, 4);
+        /* CNTFRQ_EL0 is the architectural timer rate, not the CPU clock. */
         prop(&w, &cpu, "timebase-frequency", &c->counter_frequency, 4);
         end(&w, &cpu);
     }
