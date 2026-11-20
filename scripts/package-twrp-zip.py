@@ -14,7 +14,9 @@ if not boot_img_path.is_file():
     print(f"Error: {boot_img_path} not found")
     sys.exit(1)
 
-update_binary = Path(__file__).with_name("flash-boot-recovery.sh").read_text(encoding="utf-8")\n\noutput_zip_path.parent.mkdir(parents=True, exist_ok=True)
+update_binary = Path(__file__).with_name("flash-boot-recovery.sh").read_text(encoding="utf-8")
+
+output_zip_path.parent.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as z:
     updater = zipfile.ZipInfo("META-INF/com/google/android/update-binary")
     updater.create_system = 3
