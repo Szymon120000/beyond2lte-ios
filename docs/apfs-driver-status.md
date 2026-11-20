@@ -9,23 +9,24 @@ to flash artifacts; the eventual XNU filesystem provider must understand APFS.
 ## Implemented parser layers
 
 - Bounded NXSB probe with APFS Fletcher-64 complemented checksum validation.
-- Checkpoint descriptor-ring discovery for contiguous and fragmented layouts.
-  Fragmented layouts use a bounded fixed-KV B-tree lookup of physical ranges.
+- Checkpoint descriptor-ring discovery for contiguous and fragmented layouts;
+  fragmented layouts use a bounded fixed-KV B-tree lookup of physical ranges.
 - Checkpoint-map validation and multi-block chain aggregation, including
-  physical object type, checksum, XID, LAST flag, entry count and container
-  range checks.
+  object type, checksum, XID, LAST flag, entry count and container range checks.
 - Newest internally consistent NXSB selection, with matching container UUID,
   block geometry and XID; extracts container OMAP physical address,
   spaceman/reaper OIDs and volume OIDs.
+- Checkpoint-map chain lookup to resolve container metadata OIDs such as
+  spaceman and reaper into physical block ranges.
 - Container OMAP object, key and value decoding.
 - Fixed-KV OMAP B-tree lookup with XID-aware branch selection, deleted-value
   reporting, key ordering, checksum/offset/range validation, cycle detection
   and a 32-node depth limit.
 - End-to-end container OMAP object -> B-tree -> virtual OID resolution helper.
 - Synthetic fixtures for contiguous/fragmented descriptor layouts,
-  checkpoint-map validation, OMAP leaf and branch traversal, and container
-  OMAP resolution.
-- ASan/UBSan host test scripts are part of the pull-request workflow.
+  checkpoint-map validation and lookup, OMAP leaf/branch traversal, and
+  container OMAP resolution.
+- ASan/UBSan host test scripts are wired into a separate Linux CI job.
 
 ## Deliberate limits
 
