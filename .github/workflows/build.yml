@@ -25,6 +25,17 @@ env:
   BEYOND2LTE_UEFI_COMMIT: 48add5bb03ab6f7ee4eb5aa04a30366e6dde6ba3
 
 jobs:
+  apfs-host-tests:
+    name: APFS host parser tests (ASan/UBSan)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Run NXSB, checkpoint, and OMAP parser tests
+        run: |
+          bash scripts/test-apfs-probe.sh
+          sh scripts/test-apfs-checkpoint.sh
+
   build:
     name: Build XNU, UEFI Firmware, and boot.img
     runs-on: macos-15
@@ -399,11 +410,6 @@ jobs:
 
       - name: Run host loader tests (ASan/UBSan)
         run: scripts/test-loader.sh
-
-      - name: Run APFS parser tests (ASan/UBSan)
-        run: |
-          bash scripts/test-apfs-probe.sh
-          sh scripts/test-apfs-checkpoint.sh
 
       - name: Build XNU kernel (DEVELOPMENT ARM64 B2L)
         run: |
