@@ -92,6 +92,8 @@ class B2LPower : public IOService {
     volatile uint8_t *gpio;
     bool chargerReady, gaugeReady;
     bool bitbang;                     /* hsi2c dead, use the pads directly */
+    bool bbSawCharger;                /* 0x66 acknowledged during the scan */
+    unsigned halfUs;                  /* bit-bang half period */
     unsigned timeoutUS, transferFailures, ticks, probeAttempts;
     unsigned socTenths, vcellMv;
     int currentMa, tempTenths;
@@ -157,7 +159,7 @@ class B2LPower : public IOService {
     unsigned bbGet(unsigned bank,unsigned pin){
         return (gR(bank,4)>>(pin&7u))&1u;
     }
-    void bbWait(){ IODelay(B2L_BB_HALF_US); }
+    void bbWait(){ IODelay(halfUs?halfUs:B2L_BB_HALF_US); }
     void bbStart(){
         bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
         bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
@@ -235,6 +237,33 @@ class B2LPower : public IOService {
         bbStop();
         return true;
     }
+    /* A single address cycle: START, address+W, watch for ACK, STOP. */
+    bool bbProbeAddr(uint8_t addr){
+        bbStart();
+        bool ack=bbWriteByte((uint8_t)(addr<<1));
+        bbStop();
+        return ack;
+    }
+    void bbScan(){
+        unsigned found=0,first[8]={0,0,0,0,0,0,0,0};
+        for(unsigned a=0x08;a<0x78;++a){
+            if(!bbProbeAddr((uint8_t)a))continue;
+            if(a==B2L_CHG_ADDR)bbSawCharger=true;
+            if(found<8)first[found]=(uint8_t)a;
+            ++found;
+        }
+        IOLog("B2L POWER SCAN: %u device(s): %02x %02x %02x %02x %02x %02x %02x %02x charger_ack=%d
+",
+            found,first[0],first[1],first[2],first[3],first[4],first[5],first[6],first[7],
+            bbSawCharger);
+    }
+    void bbDump(const char *tag,uint8_t addr,uint8_t base){
+        uint8_t v[8];
+        for(unsigned i=0;i<8;++i)if(!bbRead(addr,(uint8_t)(base+i),&v[i],1))v[i]=0xee;
+        IOLog("B2L POWER DUMP %s: %02x: %02x %02x %02x %02x %02x %02x %02x %02x
+",
+            tag,base,v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7]);
+    }
     bool bitbangInit(){
         gpioDesc=IOMemoryDescriptor::withPhysicalAddress(B2L_BB_GPIO_PHYS,4096,kIODirectionInOut);
         if(gpioDesc)gpioMap=gpioDesc->map(kIOMapInhibitCache);
@@ -252,6 +281,19 @@ class B2LPower : public IOService {
         unsigned sda=bbGet(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
         IOLog("B2L POWER BB: scl=%u sda=%u %s\n",scl,sda,
             (scl&&sda)?"idle high":"BUS STUCK LOW");
+        bbScan();
+        bbDump("chg-hi",B2L_CHG_ADDR,0xB0);
+        bbDump("fg-lo",B2L_FG_ADDR,0x00);
+        if(bbSawCharger){
+            /* Same register at three speeds: if the value changes with the
+             * clock, it is a timing problem, not a dead device. */
+            uint8_t a=0,b=0,c=0;
+            bbRead(B2L_CHG_ADDR,CHG_CNFG_00,&a,1);
+            halfUs=20;bbRead(B2L_CHG_ADDR,CHG_CNFG_00,&b,1);
+            halfUs=50;bbRead(B2L_CHG_ADDR,CHG_CNFG_00,&c,1);
+            halfUs=B2L_BB_HALF_US;
+            IOLog("B2L POWER SPEED: 0xb7 fast=0x%02x slow=0x%02x vslow=0x%02x\n",a,b,c);
+        }
         return true;
     }
     bool message(uint8_t addr,uint8_t *buf,unsigned n,bool read,bool stop);
@@ -399,8 +441,28 @@ void B2LPower::probe(){
     IOLog("B2L POWER PROBE: attempt=%u path=%s ok=%d%d%d%d%d%d cnfg00=0x%02x cnfg02=0x%02x cnfg06=0x%02x cnfg09=0x%02x int_ok=0x%02x details=0x%02x\n",
         probeAttempts,path,ok00,ok02,ok06,ok09,okb2,okb3,
         cnfg00,cnfg02,cnfg06,cnfg09,intok,details);
-    if(chargerReady)configure(cnfg00,cnfg02,cnfg06,cnfg09);
+    if(chargerReady){
+        configure(cnfg00,cnfg02,cnfg06,cnfg09);
+    }else if(bitbang&&bbSawCharger){
+        /* The charger acknowledged on the bus but its register file reads
+         * back as 0xff. Writes may still be latched, so apply the settings
+         * the Android driver used and re-read once to find out. */
+        IOLog("B2L POWER: charger ACKs but reads 0x%02x, forcing configuration\n",cnfg00);
+        writeReg(B2L_CHG_ADDR,CHG_CNFG_00,0x05);
+        writeReg(B2L_CHG_ADDR,CHG_CNFG_02,0x1e);
+        writeReg(B2L_CHG_ADDR,CHG_CNFG_09,0x97);
+        writeReg(B2L_CHG_ADDR,CHG_CNFG_06,0x01);
+        uint8_t r0=0,r9=0,r7=0;
+        bool a=readRegs(B2L_CHG_ADDR,CHG_CNFG_00,&r0,1);
+        bool b=readRegs(B2L_CHG_ADDR,CHG_CNFG_09,&r9,1);
+        bool c=readRegs(B2L_CHG_ADDR,CHG_CNFG_06,&r7,1);
+        IOLog("B2L POWER FORCE: readback ok=%d%d%d cnfg00=0x%02x cnfg09=0x%02x cnfg06=0x%02x\n",
+            a,b,c,r0,r9,r7);
+        if(b&&(r9&0x80))chargerReady=true;
+    }
     sample();
+    IOLog("B2L POWER GAUGE: ok=%d soc=%u.%u%% vcell=%u mV current=%d mA raw=0x%04x\n",
+        gaugeReady,socTenths/10,socTenths%10,vcellMv,currentMa,fgStatus);
 }
 
 void B2LPower::configure(uint8_t cnfg00,uint8_t cnfg02,uint8_t cnfg06,uint8_t cnfg09){
@@ -520,6 +582,8 @@ void B2LPower::publish(){
 
 void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
     B2LPower *s=(B2LPower*)owner;
+    if(s->ticks<3)IOLog("B2L POWER: tick %u charger=%d gauge=%d\n",
+        s->ticks+1,s->chargerReady,s->gaugeReady);
     ++s->ticks;
     if(!s->chargerReady&&!s->gaugeReady){
         if(s->ticks%12==0&&s->probeAttempts<10)s->probe();
@@ -547,13 +611,19 @@ bool B2LPower::start(IOService *provider){
     /* A missing USI mapping is not fatal: the GPIO path below does not need
      * it, so the service still starts and probe() falls back. */
     if(i2cMap)i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
-    timeoutUS=50000;
+    timeoutUS=50000;halfUs=B2L_BB_HALF_US;bbSawCharger=false;
     probe();
-    loop=IOWorkLoop::workLoop();
+    /* IOWorkLoop::workLoop() can return a fresh loop with no thread behind
+     * it, in which case the timer never fires (exactly what happened on the
+     * first bit-bang boot). The provider's loop is always serviced. */
+    loop=provider?provider->getWorkLoop():NULL;
+    if(!loop)loop=IOWorkLoop::workLoop();
     if(!loop)return false;
     timer=IOTimerEventSource::timerEventSource(this,&B2LPower::tick);
     if(!timer||loop->addEventSource(timer)!=kIOReturnSuccess)return false;
     timer->setTimeoutMS(5000);
+    IOLog("B2L POWER: tick timer armed on %s workloop\n",
+        provider?"provider":"private");
     registerService();
     publish();
     IOLog("B2L POWER: MAX77705 service registered charger=%d gauge=%d\n",
