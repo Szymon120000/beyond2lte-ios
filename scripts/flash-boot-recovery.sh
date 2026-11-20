@@ -52,11 +52,16 @@ grep -a -q 'B2LXNU02' "$WORK/boot.img" || fail "Image does not contain the expec
 
 # Resolve exactly one BOOT partition. Ambiguous or missing paths are fatal.
 CANDIDATES=""
-for p in /dev/block/platform/*/by-name/boot /dev/block/by-name/boot; do
+for p in /dev/block/platform/*/by-name/boot; do
   [ -b "$p" ] || continue
   CANDIDATES="$CANDIDATES
 $p"
 done
+# /dev/block/by-name is commonly a symlink to the platform path; use it only
+# as a fallback so the same partition is not counted twice.
+if [ -z "$CANDIDATES" ] && [ -b /dev/block/by-name/boot ]; then
+  CANDIDATES="/dev/block/by-name/boot"
+fi
 COUNT="$(printf '%s\n' "$CANDIDATES" | sed '/^$/d' | wc -l | tr -d ' ')"
 [ "$COUNT" = "1" ] || fail "Expected exactly one block-device by-name/boot; found $COUNT."
 BOOT_DEV="$(printf '%s\n' "$CANDIDATES" | sed '/^$/d' | head -n 1)"
