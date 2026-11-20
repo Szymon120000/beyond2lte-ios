@@ -5,7 +5,7 @@ set -eu
 
 ZIPFILE="${3:-}"
 [ -n "$ZIPFILE" ] && [ -f "$ZIPFILE" ] || { echo "B2L: missing recovery ZIP argument"; exit 1; }
-for tool in unzip sha256sum mount umount mkdir cp mv chmod stat chown; do
+for tool in unzip sha256sum mount umount mkdir cp mv chmod stat chown readlink awk grep rm sync; do
     command -v "$tool" >/dev/null 2>&1 || { echo "B2L: required recovery tool missing: $tool"; exit 1; }
 done
 
@@ -56,7 +56,7 @@ mount | grep -F " on $MNT " | grep -q '(rw' || {
 while IFS="$(printf '\t')" read -r expected mode rel; do
     [ -n "$expected" ] || continue
     case "$rel" in
-        /*|..|../*|*/../*|*/..|*'	'* ) echo "B2L: unsafe manifest path"; exit 1 ;;
+        /*|.|./*|*/./*|*/.|..|../*|*/../*|*/..|*'*'*|*'?'*|*'['*|*']'*|*'	'* ) echo "B2L: unsafe manifest path"; exit 1 ;;
     esac
     case "$mode" in
         [0-7][0-7][0-7][0-7] ) ;;
