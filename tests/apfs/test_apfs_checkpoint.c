@@ -25,4 +25,13 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
  memset(nx,0,BS);w64(nx+8,1);w64(nx+16,1);w32(nx+24,0x4000000b);w32(nx+40,0x40000002);w64(nx+48,42);seal(nx);
  assert(b2l_apfs_decode_omap(nx,BS,&oi)==0&&oi.tree_oid==42);
  {uint8_t key[16]={0},val[16]={0};w64(key,9);w64(key+8,3);w32(val+4,BS);w64(val+8,5);assert(b2l_apfs_decode_omap_key(key,16,&k)==0&&k.oid==9&&k.xid==3);assert(b2l_apfs_decode_omap_value(val,16,&v)==0&&v.paddr==5);}
+ /* Fixed-KV root leaf: one OID/XID -> physical extent mapping. */
+ {uint8_t *b=disk+4*BS;memset(b,0,BS);w64(b+8,4);w64(b+16,7);w32(b+24,0x40000002);
+  w32(b+32,7);w32(b+36,1);w32(b+40,0);w32(b+42,4);
+  w32(b+60,0);w32(b+62,16);w64(b+64,9);w64(b+72,3);
+  w32(b+4040,0);w32(b+4044,BS);w64(b+4048,5);seal(b);
+  assert(b2l_apfs_omap_lookup(rd,NULL,sizeof(disk),BS,BLOCKS,4,9,10,
+      scratch,sizeof(scratch),&k,&v)==B2L_APFS_OMAP_OK);
+  assert(k.oid==9&&k.xid==3&&v.paddr==5&&v.size==BS);
+ }
  puts("APFS checkpoint and OMAP decoder tests passed");return 0;}

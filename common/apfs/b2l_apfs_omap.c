@@ -42,3 +42,81 @@ int b2l_apfs_decode_omap_value(const void *data,size_t n,struct b2l_apfs_omap_va
  if(!o->size||!o->paddr) return B2L_APFS_OMAP_EBOUNDS;
  return B2L_APFS_OMAP_OK;
 }
+
+/* B-tree node flags and layout are checked before any offset is followed. */
+#define OMAP_BTN_ROOT 0x0001u
+#define OMAP_BTN_LEAF 0x0002u
+#define OMAP_BTN_FIXED 0x0004u
+#define OMAP_MAX_DEPTH 32u
+static int key_leq(uint64_t ao,uint64_t ax,uint64_t bo,uint64_t bx) {
+ return ao<bo || (ao==bo && ax<=bx);
+}
+int b2l_apfs_omap_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
+ uint32_t bs,uint64_t blocks,uint64_t root,uint64_t target_oid,uint64_t max_xid,
+ void *scratch,size_t scratchsz,struct b2l_apfs_omap_key *found_key,
+ struct b2l_apfs_omap_value *found_value) {
+ uint8_t *p=(uint8_t *)scratch; uint64_t seen[OMAP_MAX_DEPTH];
+ uint64_t current=root; unsigned depth;
+ if(!fn||!p||!found_key||!found_value||!target_oid||!max_xid||
+    bs<4096||bs>65536||(bs&(bs-1))||scratchsz<bs||!blocks||
+    blocks>devsz/bs) return B2L_APFS_OMAP_EINVAL;
+ for(depth=0;depth<OMAP_MAX_DEPTH;depth++) {
+  uint64_t off; uint32_t objtype,flags,nkeys,table_off,table_len;
+  uint32_t entry_size,key_start,values_end,val_size,i;
+  int leaf; uint64_t child=0,best_xid=0; int have=0;
+  for(i=0;i<depth;i++) if(seen[i]==current) return B2L_APFS_OMAP_EBOUNDS;
+  seen[depth]=current;
+  if(current>=blocks||current>UINT64_MAX/bs) return B2L_APFS_OMAP_EBOUNDS;
+  off=current*(uint64_t)bs;
+  if(off>devsz||bs>devsz-off) return B2L_APFS_OMAP_EBOUNDS;
+  if(fn(ctx,off,p,bs)!=0) return B2L_APFS_OMAP_EINVAL;
+  if(r64(p)!=fletcher(p,bs)) return B2L_APFS_OMAP_ECHECKSUM;
+  objtype=r32(p+24)&0xffffu;
+  if(objtype!=2u&&objtype!=3u) return B2L_APFS_OMAP_ETYPE;
+  flags=(uint32_t)p[32]|((uint32_t)p[33]<<8);
+  nkeys=r32(p+36);
+  if(!(flags&OMAP_BTN_FIXED)||(flags&0x8000u)) return B2L_APFS_OMAP_ETYPE;
+  leaf=(flags&OMAP_BTN_LEAF)!=0;
+  if(((flags&OMAP_BTN_ROOT)!=0)!=(objtype==2u)) return B2L_APFS_OMAP_ETYPE;
+  table_off=(uint32_t)p[40]|((uint32_t)p[41]<<8);
+  table_len=(uint32_t)p[42]|((uint32_t)p[43]<<8);
+  if(table_off==0xffffu||table_len==0xffffu||table_off>bs-56u||
+     table_len>bs-56u-table_off) return B2L_APFS_OMAP_EBOUNDS;
+  entry_size=4u;
+  if(nkeys>table_len/entry_size) return B2L_APFS_OMAP_EBOUNDS;
+  key_start=56u+table_off+table_len;
+  values_end=(flags&OMAP_BTN_ROOT)?bs-40u:bs;
+  val_size=leaf?16u:8u;
+  if(key_start>values_end||nkeys> (values_end-key_start)/16u ||
+     (uint64_t)nkeys*val_size>values_end-key_start)
+     return B2L_APFS_OMAP_EBOUNDS;
+  for(i=0;i<nkeys;i++) {
+   uint64_t ko,vo; struct b2l_apfs_omap_key k;
+   uint32_t toc=56u+table_off+i*4u;
+   uint16_t keyoff=(uint16_t)(p[toc]|((uint16_t)p[toc+1]<<8));
+   uint16_t valoff=(uint16_t)(p[toc+2]|((uint16_t)p[toc+3]<<8));
+   if(keyoff!=(uint16_t)(i*16u)||valoff!=(uint16_t)((i+1u)*val_size))
+     return B2L_APFS_OMAP_EBOUNDS;
+   ko=(uint64_t)key_start+keyoff;
+   vo=(uint64_t)values_end-valoff;
+   if(ko+16u>values_end||vo+val_size>values_end||vo<key_start)
+     return B2L_APFS_OMAP_EBOUNDS;
+   if(b2l_apfs_decode_omap_key(p+ko,16,&k)!=B2L_APFS_OMAP_OK)
+     return B2L_APFS_OMAP_EBOUNDS;
+   if(leaf) {
+    if(k.oid==target_oid&&k.xid<=max_xid&&(!have||k.xid>best_xid)) {
+     int vr=b2l_apfs_decode_omap_value(p+vo,16,found_value);
+     *found_key=k; best_xid=k.xid; have=1;
+     if(vr==B2L_APFS_OMAP_EDELETED) return vr;
+     if(vr!=B2L_APFS_OMAP_OK) return vr;
+    }
+   } else if(key_leq(k.oid,k.xid,target_oid,max_xid)) {
+    child=r64(p+vo);
+   } else break;
+  }
+  if(leaf) return have?B2L_APFS_OMAP_OK:B2L_APFS_OMAP_EBOUNDS;
+  if(!child) return B2L_APFS_OMAP_EBOUNDS;
+  current=child;
+ }
+ return B2L_APFS_OMAP_EBOUNDS;
+}

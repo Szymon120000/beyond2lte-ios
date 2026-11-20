@@ -5,6 +5,7 @@
 #define B2L_APFS_OMAP_H
 #include <stddef.h>
 #include <stdint.h>
+#include "b2l_apfs_probe.h"
 enum b2l_apfs_omap_result {
  B2L_APFS_OMAP_OK=0, B2L_APFS_OMAP_EINVAL=-40,
  B2L_APFS_OMAP_ECHECKSUM=-41, B2L_APFS_OMAP_ETYPE=-42,
@@ -22,4 +23,13 @@ int b2l_apfs_decode_omap_key(const void *bytes,size_t length,
     struct b2l_apfs_omap_key *out);
 int b2l_apfs_decode_omap_value(const void *bytes,size_t length,
     struct b2l_apfs_omap_value *out);
+/* Read-only fixed-KV OMAP B-tree lookup. root_paddr must be the resolved
+ * physical address of the B-tree root. max_xid selects the newest mapping
+ * whose key XID is <= max_xid. Traversal is bounded to 32 nodes.
+ */
+int b2l_apfs_omap_lookup(b2l_apfs_read_fn read_fn,void *context,
+    uint64_t device_size,uint32_t block_size,uint64_t block_count,
+    uint64_t root_paddr,uint64_t target_oid,uint64_t max_xid,
+    void *scratch,size_t scratch_size,struct b2l_apfs_omap_key *found_key,
+    struct b2l_apfs_omap_value *found_value);
 #endif
