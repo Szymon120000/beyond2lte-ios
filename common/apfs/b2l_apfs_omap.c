@@ -149,3 +149,29 @@ int b2l_apfs_resolve_container_oid(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
  return b2l_apfs_omap_lookup(fn,ctx,devsz,bs,blocks,info.tree_oid,oid,max_xid,
      tree_scratch,tree_scratchsz,key,value);
 }
+
+/* Resolve the volume's virtual FSTREE root. The OMAP object and its B-tree
+ * are physical objects; only root_tree_oid is virtual and needs lookup.
+ */
+int b2l_apfs_resolve_volume_root(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
+ uint32_t bs,uint64_t blocks,const struct b2l_apfs_volume_info *volume,
+ uint64_t volume_omap_pa,void *omap_scratch,size_t omap_scratchsz,
+ void *tree_scratch,size_t tree_scratchsz,struct b2l_apfs_omap_key *key,
+ struct b2l_apfs_omap_value *value) {
+ uint8_t *omap=(uint8_t *)omap_scratch; uint64_t off;
+ struct b2l_apfs_omap_info info; int rc;
+ if(!fn||!volume||!omap||!tree_scratch||!key||!value||
+    bs<4096||bs>65536||(bs&(bs-1))||omap_scratchsz<bs||
+    tree_scratchsz<bs||!blocks||blocks>devsz/bs||
+    !volume->xid||!volume->root_tree_oid||!volume_omap_pa||
+    volume_omap_pa>=blocks||volume_omap_pa>UINT64_MAX/bs)
+  return B2L_APFS_OMAP_EINVAL;
+ off=volume_omap_pa*(uint64_t)bs;
+ if(off>devsz||bs>devsz-off) return B2L_APFS_OMAP_EBOUNDS;
+ if(fn(ctx,off,omap,bs)!=0) return B2L_APFS_OMAP_EINVAL;
+ rc=b2l_apfs_decode_omap(omap,bs,&info);
+ if(rc!=B2L_APFS_OMAP_OK) return rc;
+ if(info.tree_oid>=blocks) return B2L_APFS_OMAP_EBOUNDS;
+ return b2l_apfs_omap_lookup(fn,ctx,devsz,bs,blocks,info.tree_oid,
+     volume->root_tree_oid,volume->xid,tree_scratch,tree_scratchsz,key,value);
+}
