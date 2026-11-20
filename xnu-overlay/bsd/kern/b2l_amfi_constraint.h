@@ -1,5 +1,6 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
-/* Bounded existence-only metadata predicates for iOS 26 operation 0x66.
+/* Bounded existence-only metadata predicates for iOS 26 operation 0x66,
+ * plus the dyld policy questions the device's AMFI kext normally answers.
  * Unsupported predicates retain the unavailable response. No trust is granted. */
 #ifndef B2L_AMFI_CONSTRAINT_H
 #define B2L_AMFI_CONSTRAINT_H
@@ -40,11 +41,55 @@ b2l_amfi_constraint_reply(user64_addr_t output, uint32_t code,
     return error ? error : status;
 }
 
+/* dyld asks the policy named "AMFI" which DYLD_* variables and interposing it
+ * may apply to the process it is starting (0x5a), and ExtensionKit asks
+ * whether any AMFI boot argument disables enforcement (0x60). With neither
+ * answered, dyld sees zero flags, prunes every DYLD_* variable and ignores
+ * __DATA,__interpose: the injected compatibility library then never loads, no
+ * matter how correctly the kernel added it to the environment. The answers
+ * below grant the full development mask and make no signature claim. */
+#define B2L_AMFI_CALL_CHECK_DYLD_POLICY 0x5a
+#define B2L_AMFI_CALL_QUERY_BOOTARG_STATE 0x60
+#define B2L_AMFI_CALL_COMPAT_BEACON 0x5b
+#define B2L_AMFI_DYLD_ALLOW_ALL 0xffULL
+#define B2L_AMFI_BOOTARG_NOT_ENFORCING 0x86ULL
+static unsigned b2l_amfi_dyld_queries;
+
+static int
+b2l_amfi_dyld_policy(struct proc *process, int operation, user_addr_t argument)
+{
+    if (operation == B2L_AMFI_CALL_CHECK_DYLD_POLICY) {
+        struct { uint64_t input_flags; user_addr_t output_flags; } args;
+        uint64_t allow = B2L_AMFI_DYLD_ALLOW_ALL;
+        int error = copyin(argument, &args, sizeof(args));
+        if (error) return error;
+        error = copyout(&allow, args.output_flags, sizeof(allow));
+        if (!error && __atomic_fetch_add(&b2l_amfi_dyld_queries, 1,
+            __ATOMIC_RELAXED) < 24) {
+            printf("B2L AMFI: dyld policy for %s[%d] in=0x%llx allow=0x%llx\n",
+                process->p_comm, proc_getpid(process),
+                (unsigned long long)args.input_flags,
+                (unsigned long long)allow);
+        }
+        return error;
+    }
+    if (operation == B2L_AMFI_CALL_QUERY_BOOTARG_STATE) {
+        uint64_t state = B2L_AMFI_BOOTARG_NOT_ENFORCING;
+        return copyout(&state, argument, sizeof(state));
+    }
+    if (operation == B2L_AMFI_CALL_COMPAT_BEACON) {
+        printf("B2L COMPAT: injected compatibility library constructor ran in %s[%d]\n",
+            process->p_comm, proc_getpid(process));
+        return 0;
+    }
+    return ENOPOLICY;
+}
+
 static int
 b2l_amfi_constraint_syscall(struct proc *process, int operation, user_addr_t argument)
 {
     if (!b2l_amfi_active() || !proc_is64bit(process)) return ENOPOLICY;
-    if (operation != 0x66) return ENOTSUP;
+    if (operation != 0x66) return b2l_amfi_dyld_policy(process, operation, argument);
     struct b2l_amfi_constraint_args args;
     int error = copyin(argument, &args, sizeof(args));
     if (error) return error;

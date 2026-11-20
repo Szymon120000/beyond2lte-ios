@@ -39,6 +39,11 @@ static CGContextRef bitmapSimple(void *data,size_t w,size_t h,size_t bits,size_t
 INTERPOSE(image,CGImageCreate)
 INTERPOSE(bitmap,CGBitmapContextCreateWithData)
 INTERPOSE(bitmapSimple,CGBitmapContextCreate)
-__attribute__((constructor)) static void install(void) {@autoreleasepool{enabled=b2lRuntimeMode();if(enabled)NSLog(@"B2L CG: bounded unprofiled RGBA8 software compatibility loaded");}}
+/* Unambiguous load beacon: the kernel's "AMFI" policy stand-in prints this
+ call into the boot log, so a missing beacon proves the dylib never ran (dyld
+ pruned DYLD_INSERT_LIBRARIES or skipped __interpose) instead of leaving the
+ failure inside os_log where the boot ring cannot see it. */
+extern int __mac_syscall(const char *policy,int call,void *arg);
+__attribute__((constructor)) static void install(void) {@autoreleasepool{(void)__mac_syscall("AMFI",0x5b,NULL);enabled=b2lRuntimeMode();if(enabled)NSLog(@"B2L CG: bounded unprofiled RGBA8 software compatibility loaded");}}
 
 #endif
