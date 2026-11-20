@@ -6,6 +6,69 @@ static uint64_t r64(const uint8_t*p){return(uint64_t)r32(p)|((uint64_t)r32(p+4)<
 static uint64_t fletcher(const uint8_t*p,size_t n){const uint64_t m=0xffffffffULL;uint64_t a=0,b=0,l,h;size_t i;for(i=8;i<n;i+=4){a=(a+r32(p+i))%m;b=(b+a)%m;}l=0xffffffffULL-((a+b)%m);h=0xffffffffULL-((a+l)%m);return(h<<32)|l;}
 static int checksum_ok(const uint8_t*p,size_t n){return n>=32&&r64(p)==fletcher(p,n);}
 static int read_block(b2l_apfs_read_fn fn,void*ctx,uint64_t pa,uint32_t bs,uint64_t blocks,uint8_t*buf){uint64_t off;if(pa>=blocks||pa>UINT64_MAX/bs)return-1;off=pa*(uint64_t)bs;if(off>UINT64_MAX-bs)return-1;return fn(ctx,off,buf,bs);}
+
+/* Resolve one logical checkpoint-descriptor slot through the descriptor-area
+ * B-tree. Its fixed-KV keys are logical block offsets and leaf values are
+ * prange_t { physical_block, block_count }. The tree root is expected to be
+ * a physical block; virtual roots are rejected by the object-type check.
+ */
+static int descriptor_tree_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
+ uint32_t bs,uint64_t blocks,uint64_t root,uint64_t logical,uint8_t *p,
+ uint64_t *physical) {
+ uint64_t seen[32],current=root; unsigned depth;
+ for(depth=0;depth<32;depth++) {
+  uint64_t off,child=0,best_key=0,best_pa=0,best_len=0;
+  uint32_t typ,flags,nkeys,toff,tlen,key_start,vals_end,vsize,i;
+  int leaf,have=0;
+  for(i=0;i<depth;i++)if(seen[i]==current)return B2L_APFS_CKPT_EFORMAT;
+  seen[depth]=current;
+  if(current>=blocks||current>UINT64_MAX/bs)return B2L_APFS_CKPT_EBOUNDS;
+  off=current*(uint64_t)bs;
+  if(off>devsz||bs>devsz-off)return B2L_APFS_CKPT_EBOUNDS;
+  if(fn(ctx,off,p,bs)!=0)return B2L_APFS_CKPT_EIO;
+  if(!checksum_ok(p,bs))return B2L_APFS_CKPT_ECHECKSUM;
+  typ=r32(p+24)&0xffffu;
+  if((typ!=2u&&typ!=3u)||(r32(p+24)&0xc0000000u)!=0x40000000u)
+   return B2L_APFS_CKPT_EFORMAT;
+  flags=(uint32_t)p[32]|((uint32_t)p[33]<<8);nkeys=r32(p+36);
+  if(!(flags&4u)||(flags&0x8000u))return B2L_APFS_CKPT_EUNSUPPORTED;
+  leaf=(flags&2u)!=0;
+  if(((flags&1u)!=0)!=(typ==2u))return B2L_APFS_CKPT_EFORMAT;
+  toff=(uint32_t)p[40]|((uint32_t)p[41]<<8);
+  tlen=(uint32_t)p[42]|((uint32_t)p[43]<<8);
+  if(toff==0xffffu||tlen==0xffffu||toff>bs-56u||tlen>bs-56u-toff||nkeys>tlen/4u)
+   return B2L_APFS_CKPT_EBOUNDS;
+  key_start=56u+toff+tlen;vals_end=(flags&1u)?bs-40u:bs;vsize=leaf?16u:8u;
+  if(key_start>vals_end||nkeys>(vals_end-key_start)/8u||
+     (uint64_t)nkeys*vsize>vals_end-key_start)return B2L_APFS_CKPT_EBOUNDS;
+  for(i=0;i<nkeys;i++) {
+   uint32_t t=56u+toff+i*4u;uint16_t ko=(uint16_t)(p[t]|((uint16_t)p[t+1]<<8));
+   uint16_t vo=(uint16_t)(p[t+2]|((uint16_t)p[t+3]<<8));
+   uint64_t kp=(uint64_t)key_start+ko,vp;
+   if(!vo||vo>vals_end-key_start)return B2L_APFS_CKPT_EBOUNDS;
+   vp=(uint64_t)vals_end-vo;
+   if(kp+8u>vals_end||vp+vsize>vals_end||vp<key_start||
+      !(kp+8u<=vp||vp+vsize<=kp))return B2L_APFS_CKPT_EBOUNDS;
+   {uint64_t k=r64(p+kp);
+    if(leaf) {
+     if(k<=logical&&(!have||k>best_key)) {
+      best_key=k;best_pa=r64(p+vp);best_len=r64(p+vp+8);have=1;
+     }
+    } else if(k<=logical) child=r64(p+vp); else break;
+   }
+  }
+  if(leaf) {
+   if(!have||!best_len||logical<best_key||logical-best_key>=best_len||
+      best_pa>=blocks||best_len>blocks-best_pa||
+      best_pa+(logical-best_key)>=blocks)return B2L_APFS_CKPT_EBOUNDS;
+   *physical=best_pa+(logical-best_key);return B2L_APFS_CKPT_OK;
+  }
+  if(!child)return B2L_APFS_CKPT_EBOUNDS;
+  current=child;
+ }
+ return B2L_APFS_CKPT_EBOUNDS;
+}
+
 int b2l_apfs_validate_checkpoint_map(const void*d,size_t bs,uint64_t xid,uint32_t*flags,uint32_t*count){
  const uint8_t*p=(const uint8_t*)d;uint32_t t,n,f;uint64_t i;
  if(!p||bs<4096||!flags||!count)return B2L_APFS_CKPT_EINVAL;
@@ -25,12 +88,20 @@ int b2l_apfs_discover_checkpoint(b2l_apfs_read_fn fn,void*ctx,uint64_t devsz,con
  if(!fn||!nx||!buf||!out||nxsz<4096)return B2L_APFS_CKPT_EINVAL;
  bs=r32(nx+36);blocks=r64(nx+40);if(bs<4096||bs>65536||(bs&(bs-1))||scratchsz<bs||!blocks)return B2L_APFS_CKPT_EINVAL;
  if(blocks>devsz/bs)return B2L_APFS_CKPT_EBOUNDS;
- {uint32_t raw=r32(nx+104);ring=raw&B2L_APFS_DESC_BLOCKS_MASK;if(raw&B2L_APFS_DESC_BLOCKS_FRAGMENTED)return B2L_APFS_CKPT_EUNSUPPORTED;}
+ {uint32_t raw=r32(nx+104);ring=raw&B2L_APFS_DESC_BLOCKS_MASK;}
  base=r64(nx+112);idx=r32(nx+136);used=r32(nx+140);
- if(!ring||ring>blocks||!used||used>ring||idx>=ring||base>blocks-ring)return B2L_APFS_CKPT_EBOUNDS;
- if(base>UINT64_MAX/bs||base*(uint64_t)bs>devsz||(uint64_t)ring*bs>devsz-base*(uint64_t)bs)return B2L_APFS_CKPT_EBOUNDS;
+ if(!ring||ring>blocks||!used||used>ring||idx>=ring)return B2L_APFS_CKPT_EBOUNDS;
+ if(base>=blocks)return B2L_APFS_CKPT_EBOUNDS;
+ if(!(r32(nx+104)&B2L_APFS_DESC_BLOCKS_FRAGMENTED)) {
+  if(base>blocks-ring||base>UINT64_MAX/bs||base*(uint64_t)bs>devsz||
+     (uint64_t)ring*bs>devsz-base*(uint64_t)bs)return B2L_APFS_CKPT_EBOUNDS;
+ }
  for(i=0;i<used;i++){
-  uint32_t slot=(idx+i)%ring,typ,fl=0,n=0;uint64_t pa=base+slot,xid;
+  uint32_t slot=(idx+i)%ring,typ,fl=0,n=0;uint64_t pa,xid;
+  if(r32(nx+104)&B2L_APFS_DESC_BLOCKS_FRAGMENTED) {
+   int mr=descriptor_tree_lookup(fn,ctx,devsz,bs,blocks,base,slot,buf,&pa);
+   if(mr!=B2L_APFS_CKPT_OK)return mr;
+  } else pa=base+slot;
   if(read_block(fn,ctx,pa,bs,blocks,buf)!=0)return B2L_APFS_CKPT_EIO;
   if(!checksum_ok(buf,bs))continue;
   typ=r32(buf+24)&0xffffu;xid=r64(buf+16);

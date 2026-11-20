@@ -22,6 +22,14 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
  assert(b2l_apfs_validate_checkpoint_map(disk+BS,BS,7,&ci.flags,&ci.mapping_entries)==0);
  assert(b2l_apfs_discover_checkpoint(rd,NULL,sizeof(disk),nx,BS,scratch,BS,&ci)==0);
  assert(ci.xid==7&&ci.nxsb_paddr==2&&ci.container_omap_paddr==3&&ci.volume_oids[0]==99);
+ /* Fragmented descriptor ring: B-tree maps logical slots 0..2 to blocks 1..3. */
+ {uint8_t *b=disk+6*BS;memset(b,0,BS);w64(b+8,6);w64(b+16,7);w32(b+24,0x40000002);
+  w32(b+32,7);w32(b+36,1);w16(b+56,0);w16(b+58,16);w64(b+60,0);
+  w64(b+4040,1);w64(b+4048,3);seal(b);
+  w32(nx+104,0x80000004u);w64(nx+112,6);w32(nx+136,0);w32(nx+140,3);seal(nx);
+  assert(b2l_apfs_discover_checkpoint(rd,NULL,sizeof(disk),nx,BS,scratch,BS,&ci)==0);
+  assert(ci.xid==7&&ci.nxsb_paddr==2);
+ }
  disk[BS+200]^=1;assert(b2l_apfs_validate_checkpoint_map(disk+BS,BS,7,&ci.flags,&ci.mapping_entries)==B2L_APFS_CKPT_ECHECKSUM);
  memset(nx,0,BS);w64(nx+8,1);w64(nx+16,1);w32(nx+24,0x4000000b);w32(nx+40,0x40000002);w64(nx+48,42);seal(nx);
  assert(b2l_apfs_decode_omap(nx,BS,&oi)==0&&oi.tree_oid==42);
