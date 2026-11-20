@@ -9,6 +9,7 @@
 #define BLOCKS 8u
 static uint8_t disk[BS*BLOCKS];
 static uint32_t r32(const uint8_t*p){return(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
+static void w16(uint8_t*p,uint16_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
 static void w32(uint8_t*p,uint32_t v){p[0]=v;p[1]=v>>8;p[2]=v>>16;p[3]=v>>24;}
 static void w64(uint8_t*p,uint64_t v){w32(p,(uint32_t)v);w32(p+4,(uint32_t)(v>>32));}
 static uint64_t sum(const uint8_t*p,size_t n){uint64_t a=0,b=0,l,h;for(size_t i=8;i<n;i+=4){a=(a+r32(p+i))%0xffffffffULL;b=(b+a)%0xffffffffULL;}l=0xffffffffULL-((a+b)%0xffffffffULL);h=0xffffffffULL-((a+l)%0xffffffffULL);return(h<<32)|l;}
@@ -28,7 +29,7 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
  /* Fixed-KV root leaf: one OID/XID -> physical extent mapping. */
  {uint8_t *b=disk+4*BS;memset(b,0,BS);w64(b+8,4);w64(b+16,7);w32(b+24,0x40000002);
   w32(b+32,7);w32(b+36,1);w32(b+40,0);w32(b+42,4);
-  w32(b+60,0);w32(b+62,16);w64(b+64,9);w64(b+72,3);
+  w16(b+56,0);w16(b+58,16);w64(b+60,9);w64(b+68,3);
   w32(b+4040,0);w32(b+4044,BS);w64(b+4048,5);seal(b);
   assert(b2l_apfs_omap_lookup(rd,NULL,sizeof(disk),BS,BLOCKS,4,9,10,
       scratch,sizeof(scratch),&k,&v)==B2L_APFS_OMAP_OK);
