@@ -1,0 +1,107 @@
+#!/sbin/sh
+# B2L incremental USERDATA updater for TWRP.
+# Deliberately fails closed: journaled HFS+ write support must be proven by mount.
+set -eu
+
+ZIPFILE="${3:-}"
+[ -n "$ZIPFILE" ] && [ -f "$ZIPFILE" ] || { echo "B2L: missing recovery ZIP argument"; exit 1; }
+for tool in unzip sha256sum mount umount mkdir cp mv chmod stat chown readlink awk grep rm sync; do
+    command -v "$tool" >/dev/null 2>&1 || { echo "B2L: required recovery tool missing: $tool"; exit 1; }
+done
+
+TMP="/tmp/b2l-userdata-update-$$"
+MNT="/tmp/b2l-userdata-root"
+cleanup() {
+    if mount | grep -F " on $MNT " >/dev/null 2>&1; then umount "$MNT" || true; fi
+    rm -rf "$TMP"
+}
+trap cleanup EXIT INT TERM
+mkdir -p "$TMP" "$MNT"
+unzip -q "$ZIPFILE" -d "$TMP"
+MANIFEST="$TMP/META-INF/com/google/android/userdata-manifest.tsv"
+PAYLOAD="$TMP/payload"
+[ -s "$MANIFEST" ] && [ -d "$PAYLOAD" ] || { echo "B2L: incomplete delta ZIP"; exit 1; }
+
+grep -qE '[[:space:]]hfsplus$' /proc/filesystems 2>/dev/null || {
+    echo "B2L: this TWRP kernel has no HFS+ filesystem driver; no changes made"; exit 1;
+}
+
+# Resolve exactly one distinct GPT by-name target; aliases to the same node count once.
+TARGET=""
+for candidate in /dev/block/platform/*/by-name/userdata /dev/block/by-name/userdata; do
+    [ -e "$candidate" ] || continue
+    resolved="$(readlink -f "$candidate" 2>/dev/null || echo "$candidate")"
+    [ -n "$resolved" ] || continue
+    if [ -n "$TARGET" ] && [ "$TARGET" != "$resolved" ]; then
+        echo "B2L: ambiguous userdata partition aliases; no changes made"; exit 1
+    fi
+    TARGET="$resolved"
+done
+[ -n "$TARGET" ] && [ -b "$TARGET" ] || {
+    echo "B2L: GPT by-name/userdata block device not found; no changes made"; exit 1;
+}
+
+if mount | grep -F " on $MNT " >/dev/null 2>&1; then
+    echo "B2L: private mountpoint is already in use"; exit 1
+fi
+mount -t hfsplus -o rw,nosuid,nodev "$TARGET" "$MNT" || {
+    echo "B2L: TWRP could not mount USERDATA HFS+ read-write (journaled HFS+ may be unsupported); no changes made"; exit 1;
+}
+mount | grep -F " on $MNT " | grep -q '(rw' || {
+    echo "B2L: HFS+ mounted read-only; no changes made"; exit 1;
+}
+
+# Validate every entry before changing anything. Paths are root-relative and may
+# contain spaces, but never tabs/newlines, absolute paths, dot segments or symlinks.
+while IFS="$(printf '\t')" read -r expected mode rel; do
+    [ -n "$expected" ] || continue
+    case "$rel" in
+        /*|.|./*|*/./*|*/.|..|../*|*/../*|*/..|*'*'*|*'?'*|*'['*|*']'*|*'	'* ) echo "B2L: unsafe manifest path"; exit 1 ;;
+    esac
+    case "$mode" in
+        [0-7][0-7][0-7][0-7] ) ;;
+        *) echo "B2L: invalid mode for $rel"; exit 1 ;;
+    esac
+    [ "${#expected}" -eq 64 ] || { echo "B2L: invalid SHA-256 for $rel"; exit 1; }
+    src="$PAYLOAD/$rel"
+    [ -f "$src" ] && [ ! -L "$src" ] || { echo "B2L: payload file missing/unsafe: $rel"; exit 1; }
+    actual="$(sha256sum "$src" | awk '{print $1}')"
+    [ "$actual" = "$expected" ] || { echo "B2L: package hash mismatch: $rel"; exit 1; }
+    dst="$MNT/$rel"
+    parent="$MNT"
+    oldifs="$IFS"; IFS='/'
+    set -- $rel
+    IFS="$oldifs"
+    for component do
+        [ -n "$component" ] || continue
+        parent="$parent/$component"
+        [ ! -L "$parent" ] || { echo "B2L: symlink path rejected: $rel"; exit 1; }
+    done
+done < "$MANIFEST"
+
+changed=0
+while IFS="$(printf '\t')" read -r expected mode rel; do
+    [ -n "$expected" ] || continue
+    src="$PAYLOAD/$rel"
+    dst="$MNT/$rel"
+    if [ -f "$dst" ] && [ ! -L "$dst" ]; then
+        current="$(sha256sum "$dst" | awk '{print $1}')"
+        [ "$current" = "$expected" ] && continue
+        owner="$(stat -c '%u:%g' "$dst")"
+    else
+        [ ! -e "$dst" ] && [ ! -L "$dst" ] || { echo "B2L: destination is not a regular file: $rel"; exit 1; }
+        owner="0:0"
+    fi
+    mkdir -p "${dst%/*}"
+    tmpfile="$dst.b2l-update-$$"
+    cp "$src" "$tmpfile"
+    chmod "$mode" "$tmpfile"
+    chown "$owner" "$tmpfile"
+    actual="$(sha256sum "$tmpfile" | awk '{print $1}')"
+    [ "$actual" = "$expected" ] || { rm -f "$tmpfile"; echo "B2L: staged file verification failed: $rel"; exit 1; }
+    mv -f "$tmpfile" "$dst"
+    changed=$((changed + 1))
+done < "$MANIFEST"
+
+sync
+echo "B2L: incremental USERDATA update finished; files replaced: $changed"
