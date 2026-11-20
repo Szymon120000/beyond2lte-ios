@@ -16,7 +16,10 @@ if not boot_img_path.is_file():
 
 update_binary = Path(__file__).with_name("flash-boot-recovery.sh").read_text(encoding="utf-8")\n\noutput_zip_path.parent.mkdir(parents=True, exist_ok=True)
 with zipfile.ZipFile(output_zip_path, "w", zipfile.ZIP_DEFLATED) as z:
-    z.writestr("META-INF/com/google/android/update-binary", update_binary)
+    updater = zipfile.ZipInfo("META-INF/com/google/android/update-binary")
+    updater.create_system = 3
+    updater.external_attr = (0o100755 << 16)
+    z.writestr(updater, update_binary.encode("utf-8"), compress_type=zipfile.ZIP_DEFLATED)
     z.writestr("META-INF/com/google/android/updater-script", "")
     z.write(boot_img_path, arcname="boot.img")
 
