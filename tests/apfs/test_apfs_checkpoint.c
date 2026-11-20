@@ -22,6 +22,11 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
  assert(b2l_apfs_validate_checkpoint_map(disk+BS,BS,7,&ci.flags,&ci.mapping_entries)==0);
  assert(b2l_apfs_discover_checkpoint(rd,NULL,sizeof(disk),nx,BS,scratch,BS,&ci)==0);
  assert(ci.xid==7&&ci.nxsb_paddr==2&&ci.container_omap_paddr==3&&ci.volume_oids[0]==99);
+ {uint64_t resolved=0;uint32_t bytes=0;
+  assert(b2l_apfs_resolve_checkpoint_oid(rd,NULL,sizeof(disk),BS,BLOCKS,&ci,
+      0,20,0x0b,scratch,sizeof(scratch),&resolved,&bytes)==B2L_APFS_CKPT_OK);
+  assert(resolved==3&&bytes==BS);
+ }
  /* Fragmented descriptor ring: B-tree maps logical slots 0..2 to blocks 1..3. */
  {uint8_t *b=disk+6*BS;memset(b,0,BS);w64(b+8,6);w64(b+16,7);w32(b+24,0x40000002);
   w32(b+32,7);w32(b+36,1);w16(b+56,0);w16(b+58,16);w64(b+60,0);
