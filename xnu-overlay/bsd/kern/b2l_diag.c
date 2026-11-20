@@ -15,6 +15,7 @@
 #include <mach/mach_time.h>
 #include <pexpert/pexpert.h>
 #include <arm64/b2l_diag.h>
+#include "../dev/b2l_options.h"
 #include <arm64/b2l_persistent_log.h>
 #endif
 
@@ -38,7 +39,7 @@ static int progress_role(void)
     else if(!strcmp(p->p_comm,"assetsd"))r=4;
     else if(!strcmp(p->p_comm,"tccd"))r=5;
     if(r<0)return -1;
-    int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
+    int requested=b2l_option_int("diag","b2l_diag",0);
     return requested==1?r:-1;
 }
 static int role(void)
@@ -138,7 +139,7 @@ void b2l_diag_progress(void)
     static int freq_reported;
     if(!__atomic_exchange_n(&freq_reported,1,__ATOMIC_RELAXED))
         b2l_diag_record("B2L CPU FREQ: hz=%llu cpu=%u\n",cpu_hz_probe(),(unsigned)cpu_number());
-    int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));if(requested!=1)return;
+    int requested=b2l_option_int("diag","b2l_diag",0);if(requested!=1)return;
     static const char *const names[]={"SpringBoard","backboardd","container","lsd","assetsd","tccd"};
     uint64_t now=progress_seconds();unsigned records=0,busy=0;
     for(unsigned r=0;r<B2L_PROGRESS_ROLES;r++)for(unsigned i=0;i<B2L_PROGRESS_SLOTS;i++){
@@ -256,7 +257,7 @@ static void tcc_ipc(int rx,uint64_t addr,uint32_t n,uint32_t bits,int32_t id,
     proc_t p=current_proc();if(!p||!proc_is64bit(p))return;
     int slot=!strcmp(p->p_comm,"assetsd")?0:!strcmp(p->p_comm,"tccd")?1:-1;
     if(slot<0)return;
-    int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
+    int requested=b2l_option_int("diag","b2l_diag",0);
     if(requested!=1)return;
     uint32_t h[7]={0};
     if(rx){
@@ -492,7 +493,7 @@ static void tcc_result(unsigned code,int error,const uint64_t *args)
     proc_t p=current_proc();if(!p||!proc_is64bit(p))return;
     int slot=!strcmp(p->p_comm,"assetsd")?0:!strcmp(p->p_comm,"tccd")?1:-1;
     if(slot<0)return;
-    int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));
+    int requested=b2l_option_int("diag","b2l_diag",0);
     if(requested!=1)return;
     if(code==SYS___mac_syscall){
         char policy[8];size_t n=0;

@@ -27,6 +27,7 @@ static uint64_t thread_tid(void *p){(void)p;return test_tid;}
 static uint64_t mach_absolute_time(void){return now;}
 static void absolutetime_to_nanoseconds(uint64_t t,uint64_t *v){*v=t;}
 static int PE_parse_boot_argn(const char*n,void*p,int len){(void)n;(void)len;memcpy(p,&requested,4);return 1;}
+int b2l_option_int(const char*k,const char*b,int d){(void)k;(void)b;(void)d;return requested;}
 static int copyin(uint64_t a,void *out,size_t n){if(a<(uintptr_t)region||a>(uintptr_t)region+sizeof(region)||n>(uintptr_t)region+sizeof(region)-a)return 14;memcpy(out,(void*)(uintptr_t)a,n);return 0;}
 static int copyinstr(uint64_t a,char*out,size_t n,size_t*len){for(size_t i=0;i<n;i++){if(copyin(a+i,out+i,1))return 14;if(!out[i]){*len=i+1;return 0;}}return 36;}
 static void b2l_log_append_bytes(const void*p,size_t n){assert(used+n<sizeof(output));memcpy(output+used,p,n);used+=n;output[used]=0;}

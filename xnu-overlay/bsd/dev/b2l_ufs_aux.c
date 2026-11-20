@@ -29,7 +29,9 @@ int b2l_ufs_aux_layout(const struct b2l_gpt*g,unsigned root,uint32_t bs,uint64_t
  uint64_t ub=user->first_lba*bs,us=user->block_count*bs;
  if(ub>capacity||us>capacity-ub||!us||!(base+size<=ub||ub+us<=base))return EINVAL;
  out->partition_base=base;out->partition_size=size;out->hfs_size=size-B2L_SYSTEM_LOG_BYTES;
- out->log_base=base+out->hfs_size;out->log_size=B2L_SYSTEM_LOG_BYTES;out->index=system->index;return 0;
+ out->log_base=base+out->hfs_size;out->log_size=B2L_SYSTEM_LOG_BYTES-B2L_OPTION_BLOCK_BYTES;
+ out->opt_base=base+size-B2L_OPTION_BLOCK_BYTES;out->opt_size=B2L_OPTION_BLOCK_BYTES;
+ out->index=system->index;return 0;
 }
 static int aux_hfs_one(const unsigned char*h,uint64_t expected)
 {

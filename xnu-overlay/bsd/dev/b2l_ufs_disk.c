@@ -23,6 +23,7 @@
 #include <arm64/b2l_persistent_log.h>
 #include "../kern/b2l_native_cache.h"
 #include "../kern/b2l_cache_core.h"
+#include "../kern/b2l_options.h"
 
 struct b2l_ufs_view {
 	uint64_t base, size;
@@ -391,10 +392,113 @@ static int b2l_aux_log_sync(void *context __unused)
  lck_mtx_lock(&b2l_ufs_disk_lock);int error=b2l_ufs_transport_sync();
  lck_mtx_unlock(&b2l_ufs_disk_lock);return error;
 }
+/* BEGIN B2L OPTION BLOCK */
+#define B2L_OPTION_KEYS 16
+#define B2L_OPTION_KEY_BYTES 24
+struct b2l_option_entry { char key[B2L_OPTION_KEY_BYTES]; int value; };
+static struct b2l_option_entry b2l_options[B2L_OPTION_KEYS];
+static unsigned b2l_option_count;
+static int b2l_options_active;
+
+static uint32_t
+b2l_option_checksum(const unsigned char *p, size_t n)
+{
+	uint32_t hash = 2166136261u;
+
+	while (n--) {
+		hash ^= (uint32_t)*p++;
+		hash *= 16777619u;
+	}
+	return hash;
+}
+
+void
+b2l_options_load(const void *block, size_t bytes)
+{
+	const unsigned char *b = block;
+	const char *cursor, *end;
+	uint32_t stored = 0;
+
+	b2l_options_active = 0;
+	b2l_option_count = 0;
+	if (b == NULL || bytes != B2L_OPTION_BLOCK_BYTES) return;
+	if (memcmp(b, "B2LOPT1", 7) != 0 || b[7] != 0) return;
+	memcpy(&stored, b + 8, sizeof(stored));
+	if (stored != b2l_option_checksum(b + B2L_OPTION_TEXT_OFFSET,
+	    bytes - B2L_OPTION_TEXT_OFFSET)) return;
+	cursor = (const char *)(b + B2L_OPTION_TEXT_OFFSET);
+	end = cursor + (bytes - B2L_OPTION_TEXT_OFFSET);
+	while (cursor < end && b2l_option_count < B2L_OPTION_KEYS) {
+		const char *newline = memchr(cursor, '\n', (size_t)(end - cursor));
+		const char *stop = newline ? newline : end;
+		const char *eq = memchr(cursor, '=', (size_t)(stop - cursor));
+		if (eq != NULL && eq > cursor && (size_t)(eq - cursor) < B2L_OPTION_KEY_BYTES &&
+		    *cursor != '#') {
+			const char *v = eq + 1;
+			int sign = 1, value = 0, digits = 0;
+			if (v < stop && *v == '-') { sign = -1; v++; }
+			while (v < stop && *v >= '0' && *v <= '9' && digits < 9) {
+				value = value * 10 + (*v++ - '0');
+				digits++;
+			}
+			if (digits && v == stop) {
+				struct b2l_option_entry *entry = &b2l_options[b2l_option_count++];
+				memset(entry->key, 0, sizeof(entry->key));
+				memcpy(entry->key, cursor, (size_t)(eq - cursor));
+				entry->value = sign * value;
+			}
+		}
+		if (newline == NULL) break;
+		cursor = newline + 1;
+	}
+	b2l_options_active = 1;
+}
+
+int
+b2l_option_int(const char *key, const char *bootarg, int fallback)
+{
+	int value = 0;
+
+	if (key == NULL) return fallback;
+	if (b2l_options_active) {
+		for (unsigned i = 0; i < b2l_option_count; i++)
+			if (!strcmp(b2l_options[i].key, key)) return b2l_options[i].value;
+	}
+	if (bootarg != NULL && PE_parse_boot_argn(bootarg, &value, sizeof(value)))
+		return value;
+	return fallback;
+}
+/* END B2L OPTION BLOCK */
+
+static unsigned char b2l_option_block[B2L_OPTION_BLOCK_BYTES];
+/* Read once, before any consumer starts, so every later decision sees the same
+ * values. A missing or invalid block leaves the boot arguments in charge. */
+static void b2l_start_options(void)
+{
+ struct b2l_ufs_aux_layout layout;uint64_t capacity;size_t done=0;
+ int error=b2l_ufs_capacity(&b2l_reader,&capacity);
+ if(!error)error=b2l_ufs_aux_layout(&b2l_partitions,b2l_root_index,b2l_reader.block_size,capacity,&layout);
+ if(!error){
+  lck_mtx_lock(&b2l_ufs_disk_lock);
+  error=b2l_ufs_read_view(&b2l_reader,layout.partition_base,layout.partition_size,
+      layout.opt_base-layout.partition_base,B2L_OPTION_BLOCK_BYTES,0,b2l_option_block,&done);
+  lck_mtx_unlock(&b2l_ufs_disk_lock);
+  if(!error&&done!=B2L_OPTION_BLOCK_BYTES)error=EIO;
+ }
+ if(error){printf("B2L OPTIONS: block unavailable error=%d; boot arguments apply\n",error);return;}
+ b2l_options_load(b2l_option_block,B2L_OPTION_BLOCK_BYTES);
+ printf("B2L OPTIONS: block %s; native_cache=%d graphics_compat=%d hfs_compat=%d system_log=%d diag=%d\n",
+     b2l_options_active?"applied":"empty",
+     b2l_option_int("native_cache","b2l_native_cache",0),
+     b2l_option_int("graphics_compat","b2l_graphics_compat",1),
+     b2l_option_int("hfs_compat","b2l_hfs_compat",1),
+     b2l_option_int("system_log","b2l_system_log",0),
+     b2l_option_int("diag","b2l_diag",0));
+}
+
 static void b2l_start_system_log(void)
 {
- int enabled=0;
- if(!PE_parse_boot_argn("b2l_system_log",&enabled,sizeof(enabled))||enabled!=1)return;
+ if(b2l_option_int("system_log","b2l_system_log",0)!=1)return;
  struct b2l_ufs_aux_layout layout;uint64_t capacity;unsigned char first[512],last[512];size_t done=0;
  int error=b2l_ufs_capacity(&b2l_reader,&capacity);
  if(!error)error=b2l_ufs_aux_layout(&b2l_partitions,b2l_root_index,b2l_reader.block_size,capacity,&layout);
@@ -427,7 +531,7 @@ static struct b2l_hfs b2l_cache_hfs;
 static struct b2l_cache_fork b2l_cache_fork;
 static void b2l_start_native_cache(void)
 {
- int enabled=0;if(!PE_parse_boot_argn("b2l_native_cache",&enabled,sizeof(enabled))||enabled!=1)return;
+ if(b2l_option_int("native_cache","b2l_native_cache",0)!=1)return;
  struct b2l_ufs_aux_layout layout;uint64_t capacity;int error=b2l_ufs_capacity(&b2l_reader,&capacity);
  if(!error)error=b2l_ufs_aux_layout(&b2l_partitions,b2l_root_index,b2l_reader.block_size,capacity,&layout);
  if(error)return;
@@ -496,6 +600,7 @@ b2l_ufs_disk_init(void)
 	lck_mtx_lock(&b2l_ufs_disk_lock);
 	b2l_probe_selected();
 	lck_mtx_unlock(&b2l_ufs_disk_lock);
+	b2l_start_options();
 	b2l_start_system_log();
 	b2l_start_native_cache();
 	for (unsigned i = 0; i < b2l_partitions.partition_count; i++) {

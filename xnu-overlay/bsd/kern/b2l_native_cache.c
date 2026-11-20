@@ -5,6 +5,7 @@
  * after root journal replay and before the first userspace instruction.
  */
 #include "b2l_native_cache.h"
+#include "b2l_options.h"
 #include "b2l_cache_core.h"
 #include "b2l_nc_store.h"
 #include "b2l_nc_undo.h"
@@ -74,7 +75,7 @@ static uint64_t reclaimed,undo_restored;
 static int reclaim_disabled;
 
 
-static int enabled(void){int v=0;return b2l_arm64e_compat_enabled()&&PE_parse_boot_argn("b2l_native_cache",&v,sizeof(v))&&v==1;}
+static int enabled(void){return b2l_arm64e_compat_enabled()&&b2l_option_int("native_cache","b2l_native_cache",0)==1;}
 void b2l_native_cache_storage(const struct b2l_io*io,const uint8_t id[12]){
  if(!io||!io->read||!io->write||!io->sync||io->bytes<B2L_NC_HEADER+B2L_NC_CELL)return;
  cache_io=*io;memcpy(root_identity,id,12);storage_ready=1;

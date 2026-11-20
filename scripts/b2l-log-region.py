@@ -11,8 +11,12 @@ RECORD_MAGIC=b'B2LLOGPG'
 def crc(page):
     q=bytearray(page);q[48:52]=bytes(4);return zlib.crc32(q)&0xffffffff
 
-def header(size=REGION,epoch=0):
-    if size!=REGION:raise ValueError('region must be exactly 16 MiB')
+# The final 4 KiB of the tail is the option block, so the kernel logs into
+# REGION-4096 bytes. Accept both geometries; the header states which one it is.
+SIZES=(REGION,REGION-4096)
+DEFAULT=REGION-4096
+def header(size=DEFAULT,epoch=0):
+    if size not in SIZES:raise ValueError('region must be 16 MiB or 16 MiB-4 KiB')
     q=bytearray(PAGE)
     struct.pack_into('<8sIIQIIQQ',q,0,MAGIC,1,PAGE,size,PAGE,(size-DATA_OFFSET)//PAGE,DATA_OFFSET,epoch)
     struct.pack_into('<I',q,48,crc(q))
@@ -20,7 +24,7 @@ def header(size=REGION,epoch=0):
 def parse_header(q):
     if len(q)!=PAGE:raise ValueError('short header')
     magic,ver,hbytes,size,rbytes,count,offset,epoch=struct.unpack_from('<8sIIQIIQQ',q)
-    if(magic,ver,hbytes,size,rbytes,count,offset)!=(MAGIC,1,PAGE,REGION,PAGE,(REGION-DATA_OFFSET)//PAGE,DATA_OFFSET):raise ValueError('header geometry/magic')
+    if(magic,ver,hbytes,rbytes,offset)!=(MAGIC,1,PAGE,PAGE,DATA_OFFSET) or size not in SIZES or count!=(size-DATA_OFFSET)//PAGE:raise ValueError('header geometry/magic')
     if struct.unpack_from('<I',q,48)[0]!=crc(q):raise ValueError('header CRC')
     if any(q[52:]):raise ValueError('unknown header fields')
     return {'size':size,'count':count,'epoch':epoch}
@@ -39,8 +43,8 @@ def main():
     a=ap.parse_args()
     if a.cmd=='init':
         with a.output.open('xb') as f:
-            f.truncate(REGION);f.seek(0);f.write(header());f.write(header());f.flush()
-        print(json.dumps({'size':REGION,'headers':[0,PAGE],'record_offset':DATA_OFFSET,'record_count':(REGION-DATA_OFFSET)//PAGE,'page_bytes':PAGE}));return
+            f.truncate(DEFAULT);f.seek(0);f.write(header());f.write(header());f.flush()
+        print(json.dumps({'size':DEFAULT,'headers':[0,PAGE],'record_offset':DATA_OFFSET,'record_count':(DEFAULT-DATA_OFFSET)//PAGE,'page_bytes':PAGE}));return
     with a.input.open('rb') as f:
         hs=[]
         for i in range(2):

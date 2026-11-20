@@ -3,6 +3,8 @@
  * Scoped runtime compatibility and optional CoreGraphics backtrace env. */
 #ifndef B2L_EXEC_GRAPHICS_DIAG_H
 #define B2L_EXEC_GRAPHICS_DIAG_H
+/* Runtime option block first, b2l_<key> boot argument second. */
+extern int b2l_option_int(const char *key, const char *bootarg, int fallback);
 #if defined(ARM64_BOARD_CONFIG_B2L)
 extern int b2l_apps_cache_is_ready(void);
 extern int b2l_compat_is_ready(void);
@@ -24,10 +26,12 @@ b2l_exec_runtime_compat(struct image_params *imgp, int pointer_size, int ready)
 	    !strcmp(path, "/usr/libexec/backboardd") ||
 	    !strcmp(path, "/Applications/Preferences.app/Preferences") ||
 	    !strcmp(path, "/System/Library/PrivateFrameworks/IconServices.framework/Support/iconservicesagent")) {
+		if (!b2l_option_int("graphics_compat", "b2l_graphics_compat", 1)) return 0;
 		setting = graphics_setting;
 		setting_size = sizeof(graphics_setting);
 	} else if (!strcmp(path, "/usr/libexec/installd") ||
 	           !strcmp(path, "/System/Library/PrivateFrameworks/MobileInstallation.framework/XPCServices/com.apple.MobileInstallationHelperService.xpc/com.apple.MobileInstallationHelperService")) {
+		if (!b2l_option_int("hfs_compat", "b2l_hfs_compat", 1)) return 0;
 		setting = hfs_setting;
 		setting_size = sizeof(hfs_setting);
 	} else {
@@ -63,8 +67,7 @@ b2l_exec_graphics_diag(struct image_params *imgp, int pointer_size)
 #endif
 	static const char setting[] = "CG_CONTEXT_SHOW_BACKTRACE=1";
 	static const char key[] = "CG_CONTEXT_SHOW_BACKTRACE=";
-	int enabled = 0;
-	if (!PE_parse_boot_argn("b2l_diag", &enabled, sizeof(enabled)) || enabled != 1 ||
+	if (!b2l_option_int("diag", "b2l_diag", 0) ||
 	    (pointer_size != 4 && pointer_size != 8)) return 0;
 	const char *path = imgp->ip_strings + strlen(EXECUTABLE_KEY);
 	if (strcmp(path, "/System/Library/CoreServices/SpringBoard.app/SpringBoard") &&

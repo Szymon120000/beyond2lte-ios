@@ -14,8 +14,9 @@ before its framebuffer-active test. Other console paths must not append again.
 
 After native UFS disk initialization and outside the disk mutex, the parent
 adapter may call `b2l_log_start(&sink)` when its log boot argument is enabled.
-The sink callbacks are synchronous and use offsets relative to the dedicated
-16 MiB tail region. Each callback returns zero for complete success and nonzero
+The sink callbacks are synchronous and use offsets relative to the framed
+console region: the 16 MiB SYSTEM tail minus its final 4 KiB, which holds the
+runtime option block (`docs/build-0104.md`). Each callback returns zero for complete success and nonzero
 on failure. The callback owner must independently verify SYSTEM/HFS/tail bounds,
 serialize its private reader, and propagate device write/synchronization errors.
 The kernel log layer does not infer or broaden write authorization.
@@ -34,7 +35,8 @@ Provision a new private raw region file with:
 python3 scripts/b2l-log-region.py init NEW_REGION_FILE
 ```
 
-This creates exactly 16 MiB and refuses an existing output. Provisioning that
+This creates exactly 16 MiB - 4 KiB (16,773,120 bytes) and refuses an existing
+output. The decoder still accepts a legacy 16 MiB region. Provisioning that
 file onto the authorized tail belongs to the parent storage integration.
 
 ## RAM and concurrency

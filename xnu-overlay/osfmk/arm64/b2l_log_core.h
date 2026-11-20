@@ -7,7 +7,9 @@
 #define B2L_LOG_TEXT_CAPACITY (4u*1024u*1024u)
 #endif
 #define B2L_LOG_PAGE_BYTES 4096u
-#define B2L_LOG_REGION_BYTES (16u*1024u*1024u)
+/* The SYSTEM tail is 16 MiB; its last 4 KiB holds the runtime option block,
+ * so the framed console owns the rest. */
+#define B2L_LOG_REGION_BYTES (16u*1024u*1024u-4096u)
 #define B2L_LOG_DATA_OFFSET (2u*B2L_LOG_PAGE_BYTES)
 #define B2L_LOG_RECORD_COUNT ((B2L_LOG_REGION_BYTES-B2L_LOG_DATA_OFFSET)/B2L_LOG_PAGE_BYTES)
 #define B2L_LOG_RECORD_SPAN 3584u

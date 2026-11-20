@@ -9,7 +9,7 @@ static void header(unsigned char*p,uint64_t size){memset(p,0,512);p[0]='H';p[1]=
 int main(void){
  struct b2l_gpt g={.partition_count=2};g.partitions[0]=(struct b2l_gpt_partition){.index=25,.first_lba=100,.block_count=100000};strcpy(g.partitions[0].name,"system");g.partitions[1]=(struct b2l_gpt_partition){.index=31,.first_lba=200000,.block_count=100000};strcpy(g.partitions[1].name,"userdata");
  struct b2l_ufs_aux_layout out;uint64_t capacity=400000ULL*4096;
- assert(!b2l_ufs_aux_layout(&g,31,4096,capacity,&out));assert(out.index==25&&out.partition_base==100ULL*4096&&out.log_base+out.log_size==out.partition_base+out.partition_size&&out.log_size==16777216&&out.hfs_size+out.log_size==out.partition_size);
+ assert(!b2l_ufs_aux_layout(&g,31,4096,capacity,&out));assert(out.index==25&&out.partition_base==100ULL*4096&&out.opt_base+out.opt_size==out.partition_base+out.partition_size&&out.opt_base==out.log_base+out.log_size&&out.log_size==16773120&&out.hfs_size+out.log_size+out.opt_size==out.partition_size);
  unsigned char a[512],b[512];header(a,out.hfs_size);memcpy(b,a,512);assert(!b2l_ufs_aux_hfs(a,b,out.hfs_size));a[4+2]=0;assert(b2l_ufs_aux_hfs(a,b,out.hfs_size)==EINVAL);header(a,out.hfs_size);be32(a+44,out.partition_size/4096);assert(b2l_ufs_aux_hfs(a,b,out.hfs_size)==EINVAL);header(a,out.hfs_size);a[0]='B';assert(b2l_ufs_aux_hfs(a,b,out.hfs_size)==EINVAL);header(a,out.hfs_size);be32(b+48,UINT32_MAX);assert(b2l_ufs_aux_hfs(a,b,out.hfs_size)==EINVAL);
  assert(b2l_ufs_aux_layout(&g,25,4096,capacity,&out)==EINVAL&&!out.log_size);assert(b2l_ufs_aux_layout(&g,0,4096,capacity,&out)==EINVAL);
  for(unsigned mode=0;mode<9;mode++){

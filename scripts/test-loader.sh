@@ -27,3 +27,6 @@ mkdir -p "$build_dir"
 # Owned-payload publication is what feeds the runtime compatibility libraries,
 # so a regression here silently disables rendering compatibility at boot.
 "${PYTHON:-python3}" "$repo_root/tests/test-apps-publish.py"
+
+# The SYSTEM option block must never turn a typo into a behaviour change.
+"${PYTHON:-python3}" "$repo_root/tests/test-option-file.py"

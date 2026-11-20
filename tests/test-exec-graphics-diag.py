@@ -29,7 +29,7 @@ using boolean_t=bool;
 #define EXECUTABLE_KEY "executable_path="
 struct image_params{char*ip_strings,*ip_strendp,*ip_endargv;int ip_strspace,ip_argspace,ip_envc;};
 static bool has_arg;static int mode,logs,force_error;
-static bool PE_parse_boot_argn(const char*n,void*p,int size){assert(!strcmp(n,"b2l_diag")&&size==sizeof(int));memcpy(p,&mode,size);return has_arg;}
+int b2l_option_int(const char*key,const char*,int){return !strcmp(key,"diag")?(has_arg?mode:0):1;}
 static void b2l_early_trace(const char*,...){++logs;}
 static int copystr(const char*s,char*d,int cap,size_t*n){if(force_error){*n=0;return EFAULT;}*n=std::min(strlen(s)+1,(size_t)cap);memcpy(d,s,*n);return *n==strlen(s)+1?0:ENAMETOOLONG;}
 static int copyinstr(user_addr_t,char*,int,size_t*){assert(false);return EFAULT;}
