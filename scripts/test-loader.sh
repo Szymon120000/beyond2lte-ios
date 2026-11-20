@@ -26,4 +26,4 @@ mkdir -p "$build_dir"
 
 # Owned-payload publication is what feeds the runtime compatibility libraries,
 # so a regression here silently disables rendering compatibility at boot.
-"$repo_root/tests/test-apps-publish.py"
+"${PYTHON:-python3}" "$repo_root/tests/test-apps-publish.py"
