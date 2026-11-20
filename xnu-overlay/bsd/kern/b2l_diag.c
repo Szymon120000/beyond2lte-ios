@@ -214,7 +214,11 @@ static struct process_sample *container_sample(int r)
 }
 
 static uint64_t message_sequence;
-static unsigned raw_budget=4*1024*1024;
+/* The 5 MB persistent ring must survive the whole boot. A 4 MB raw-capture
+ * budget let IPC payload hex dumps evict the early timeline (the first
+ * recovered record was already at sec 63), so payload capture is now small
+ * enough to stay out of the way of the event records. */
+static unsigned raw_budget=64*1024;
 static unsigned raw_reserve_from(unsigned *budget,unsigned n)
 {
     unsigned old=__atomic_load_n(budget,__ATOMIC_RELAXED);
