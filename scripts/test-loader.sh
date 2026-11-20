@@ -23,3 +23,7 @@ mkdir -p "$build_dir"
 "${CC:-clang}" -std=c11 -Wall -Wextra -Werror -I"$repo_root/common/smp" -I"$repo_root/common/memory" -fsanitize=address,undefined \
   "$repo_root/tests/gic_target_test.c" -o "$build_dir/gic_target_test"
 "$build_dir/gic_target_test"
+
+# Owned-payload publication is what feeds the runtime compatibility libraries,
+# so a regression here silently disables rendering compatibility at boot.
+"$repo_root/tests/test-apps-publish.py"

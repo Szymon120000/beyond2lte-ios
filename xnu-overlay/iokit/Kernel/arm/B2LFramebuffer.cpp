@@ -254,6 +254,29 @@ b2l_fb_progress(uint64_t vsync)
 }
 
 /* Copy each enabled layer's surface into the panel memory (no scaling). */
+static void
+b2l_fb_sample(const uint32_t *pixels, uint32_t stride, uint32_t width,
+    uint32_t height, uint32_t swap_id)
+{
+	uint32_t nonblack = 0, low = 0xffffffffU, high = 0, values = 0;
+	uint64_t sum = 0;
+
+	if (pixels == NULL || width == 0 || height == 0) return;
+	for (uint32_t y = 0; y < 8; y++) {
+		for (uint32_t x = 0; x < 8; x++) {
+			uint32_t v = pixels[(uint64_t)((height - 1) * y / 7) * stride +
+			    (width - 1) * x / 7];
+			if (v & 0x00ffffffU) nonblack++;
+			if (v < low) low = v;
+			if (v > high) high = v;
+			sum += v;
+			values++;
+		}
+	}
+	b2l_diag_record("B2L FB SAMPLE: swap=%u nonblack=%u/%u min=0x%x max=0x%x mean=0x%llx\n",
+	    swap_id, nonblack, values, low, high, (unsigned long long)(sum / values));
+}
+
 void
 AppleCLCD::swap(const uint8_t *rec)
 {
@@ -296,8 +319,8 @@ AppleCLCD::swap(const uint8_t *rec)
 		B2LSurface *s = b2l_surface_copy(id);
 		if (b2l_fb_swaps_logged < 16) {
 			b2l_fb_swaps_logged++;
-			IOLog("B2L FB: swap %u layer %u surface %u %ux%u fmt 0x%x bpr %u a %d,%d %ux%u b %d,%d %dx%d\n",
-			    swap_id, layer, id, s ? s->width : 0, s ? s->height : 0,
+			IOLog("B2L FB: swap %u layer %u pid %d surface %u %ux%u fmt 0x%x bpr %u a %d,%d %ux%u b %d,%d %dx%d\n",
+			    swap_id, layer, proc_selfpid(), id, s ? s->width : 0, s ? s->height : 0,
 			    s ? s->pixelFormat : 0, s ? s->bytesPerRow : 0, sx, sy, get32(a, 8),
 			    get32(a, 12), dx, dy, w, h);
 		}
@@ -320,6 +343,7 @@ AppleCLCD::swap(const uint8_t *rec)
                 (const void*)src,s->memory->getLength(),s->width,s->height,s->bytesPerRow,s->offset,
                 sx,sy,dx,dy,w,h);
             if(shown&&!fConsolePaused){b2l_early_gui_present();fConsolePaused=true;IOLog("B2L FB: first IOSurface frame copied to physical scanout\n");}
+            if(shown&&b2l_fb_swaps_logged<=16)b2l_fb_sample((const uint32_t *)fPixels,fRowBytes/4,fWidth,fHeight,swap_id);
             __asm__ volatile("dsb sy":::"memory");
             IOLockUnlock(fLock);
             if (shown) {
