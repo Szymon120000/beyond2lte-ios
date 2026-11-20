@@ -125,6 +125,42 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
   assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
       &vol,8,3,omap_scratch,sizeof(omap_scratch),node_scratch,
       sizeof(node_scratch),&inode)==B2L_APFS_FSTREE_ENOTFOUND);
+
+  /* Multi-level virtual FSTREE: root branch OID 66 -> leaf OID 67. */
+  {uint8_t *omap_tree=disk+9*BS,*root=disk+10*BS,*leaf=disk+11*BS;
+   memset(omap_tree,0,BS);w64(omap_tree+8,9);w64(omap_tree+16,12);
+   w32(omap_tree+24,0x40000002u);w32(omap_tree+32,7);w32(omap_tree+36,2);
+   w16(omap_tree+40,0);w16(omap_tree+42,8);
+   w16(omap_tree+56,0);w16(omap_tree+58,16);
+   w16(omap_tree+60,16);w16(omap_tree+62,32);
+   w64(omap_tree+64,66);w64(omap_tree+72,3);
+   w64(omap_tree+80,67);w64(omap_tree+88,3);
+   w32(omap_tree+4024,0);w32(omap_tree+4028,BS);w64(omap_tree+4032,11);
+   w32(omap_tree+4040,0);w32(omap_tree+4044,BS);w64(omap_tree+4048,10);
+   seal(omap_tree);
+   memset(root,0,BS);w64(root+8,66);w64(root+16,12);
+   w32(root+24,0x80000002u);w32(root+28,0x0eu);
+   w16(root+32,1);w16(root+34,1);w32(root+36,1);
+   w16(root+40,0);w16(root+42,8);
+   w16(root+56,0);w16(root+58,8);w16(root+60,8);w16(root+62,8);
+   w64(root+64,(3ULL<<60)|2ULL);w64(root+BS-40-8,67);seal(root);
+   memset(leaf,0,BS);w64(leaf+8,67);w64(leaf+16,12);
+   w32(leaf+24,0x80000003u);w32(leaf+28,0x0eu);
+   w16(leaf+32,2);w16(leaf+34,0);w32(leaf+36,1);
+   w16(leaf+40,0);w16(leaf+42,8);
+   w16(leaf+56,0);w16(leaf+58,8);w16(leaf+60,92);w16(leaf+62,92);
+   w64(leaf+64,(3ULL<<60)|2ULL);
+   w64(leaf+BS-92,1);w64(leaf+BS-92+8,0);
+   w64(leaf+BS-92+16,100);w64(leaf+BS-92+24,200);
+   w64(leaf+BS-92+32,300);w64(leaf+BS-92+40,400);
+   w64(leaf+BS-92+48,2);w32(leaf+BS-92+56,0);
+   w32(leaf+BS-92+72,501);w32(leaf+BS-92+76,20);
+   w16(leaf+BS-92+80,0x41ed);seal(leaf);
+   assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
+       &vol,8,2,omap_scratch,sizeof(omap_scratch),node_scratch,
+       sizeof(node_scratch),&inode)==B2L_APFS_FSTREE_OK);
+   assert(inode.oid==2&&inode.owner==501&&inode.mode==0x41ed);
+  }
   fs[40]=0xff;fs[41]=0xff;seal(fs);
   assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
       &vol,8,2,omap_scratch,sizeof(omap_scratch),node_scratch,
