@@ -1,9 +1,10 @@
 /* SPDX-License-Identifier: BSD-2-Clause
  * MAX77705 power path.
  *
- * Charger at USI hsi2c_45 (0x15D60000), 7-bit address 0x66; fuel gauge at
- * 0x36 (both on the same bus). Register layout and field scaling come from
- * the Samsung max77705 charger/fuel-gauge drivers.
+ * Charger at USI hsi2c_45 (0x15D60000), 7-bit address 0x69; fuel gauge at
+ * 0x36 (both on the same bus). 0x66 on that bus is the PMIC block, not the
+ * charger. Register layout and field scaling come from the Samsung max77705
+ * charger/fuel-gauge drivers.
  *
  * Two transports, tried in order:
  *   1. the USI-I2C-v2 block at 0x15D60000, using the routine proven by
@@ -27,7 +28,12 @@
 #include <IOKit/IOMemoryDescriptor.h>
 #include <kern/clock.h>
 
-#define B2L_CHG_ADDR       0x66
+/* MAX77705 exposes several I2C slave addresses. 0x66 is the PMIC block (its
+ * register 0 only returns the PMIC ID 0x15), the charger block answers at
+ * 0x69 (Samsung: I2C_ADDR_CHG = 0xD2 >> 1) and the fuel gauge at 0x36.
+ * Reading the charger at 0x66 ACKs but returns 0xff for every charger
+ * register, which is exactly what the first bit-bang boots saw. */
+#define B2L_CHG_ADDR       0x69
 #define B2L_FG_ADDR        0x36
 
 #define CHG_INT_OK         0xB2
@@ -49,7 +55,10 @@
  * (value+1 steps). */
 #define B2L_CHG_ILIM_STEP_MA 25u
 #define B2L_CHG_EN           0x80u
-#define B2L_CHG_ILIM_USB_MA  1500u
+/* Never ask for more than a plain USB port can supply. configure() only ever
+ * raises this field, so a limit already negotiated by the bootloader or a
+ * fast-charge source is preserved. AICL stays enabled as the second guard. */
+#define B2L_CHG_ILIM_USB_MA  500u
 #define B2L_CHG_ILIM_SAFE_MA 500u
 /* Initial fast-charge current. The charger's own input regulation and the
  * thermal guard below keep this from being sustained when it is not safe. */
@@ -580,6 +589,10 @@ void B2LPower::publish(){
 
 void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
     B2LPower *s=(B2LPower*)owner;
+    /* IOTimerEventSource is one-shot: without this the charger watchdog is
+     * kicked once and then expires, which turns charging off again. Re-arm
+     * before the work so a blocked bus cannot stop the watchdog. */
+    if(sender)sender->setTimeoutMS(5000);
     if(s->ticks<3)IOLog("B2L POWER: tick %u charger=%d gauge=%d\n",
         s->ticks+1,s->chargerReady,s->gaugeReady);
     ++s->ticks;
@@ -619,7 +632,11 @@ bool B2LPower::start(IOService *provider){
     if(!loop)return false;
     timer=IOTimerEventSource::timerEventSource(this,&B2LPower::tick);
     if(!timer||loop->addEventSource(timer)!=kIOReturnSuccess)return false;
+    /* setTimeout only stores the deadline; wakeAtTime schedules the callout
+     * only while the event source is enabled. Without enable() the timer
+     * never fires at all (no ticks, no watchdog kicks). */
     timer->setTimeoutMS(5000);
+    timer->enable();
     IOLog("B2L POWER: tick timer armed on %s workloop\n",
         provider?"provider":"private");
     registerService();
