@@ -14,13 +14,16 @@ static uint64_t fletcher(const uint8_t *p,size_t n) {
 }
 int b2l_apfs_decode_volume(const void *data,size_t n,
  struct b2l_apfs_volume_info *o) {
- const uint8_t *p=(const uint8_t *)data; uint32_t type;
- if(!p||!o||n<1056u||n<4096u||n>65536u||(n&(n-1u))||(n&3u))
+ const uint8_t *p=(const uint8_t *)data; uint32_t type; int is_snapshot;
+ if(!p||!o||n<4096u||n>65536u||(n&(n-1u))||(n&3u))
   return B2L_APFS_VOLUME_EINVAL;
  type=r32(p+24);
- if((type&0xffffu)!=0x0du||(type&0xc0000000u)!=0x40000000u||
-    r32(p+28)!=0u)
+ /* Regular APSB objects are physical (0x0000000d); snapshot superblocks
+  * are ephemeral (0x4000000d). Virtual APSB objects are not accepted. */
+ if((type&0xffffu)!=0x0du||
+    (type&0xbfff0000u)!=0u||r32(p+28)!=0u)
   return B2L_APFS_VOLUME_ETYPE;
+ is_snapshot=(type&0x40000000u)!=0;
  if(r64(p)!=fletcher(p,n)) return B2L_APFS_VOLUME_ECHECKSUM;
  if(r32(p+32)!=0x42535041u) return B2L_APFS_VOLUME_ETYPE;
  o->oid=r64(p+8); o->xid=r64(p+16); o->fs_index=r32(p+36);
@@ -31,9 +34,9 @@ int b2l_apfs_decode_volume(const void *data,size_t n,
  o->omap_oid=r64(p+128); o->root_tree_oid=r64(p+136);
  o->extentref_tree_oid=r64(p+144); o->snap_meta_tree_oid=r64(p+152);
  for(size_t i=0;i<16;i++) o->uuid[i]=p[240+i];
- o->fs_flags=r64(p+256);
- if(!o->oid||!o->xid||!o->omap_oid||!o->root_tree_oid||
-    (o->root_tree_type&0xffffu)!=2u)
+ o->fs_flags=r64(p+264);
+ if(!o->oid||!o->xid||(!is_snapshot&&!o->omap_oid)||
+    !o->root_tree_oid||(o->root_tree_type&0xffffu)!=2u)
   return B2L_APFS_VOLUME_EBOUNDS;
  return B2L_APFS_VOLUME_OK;
 }
