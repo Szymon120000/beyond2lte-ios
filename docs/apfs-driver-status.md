@@ -1,65 +1,46 @@
 # APFS driver bring-up (B2L)
 
-## Scope and safety boundary
+## Safety boundary
 
-The branch `feat/apfs-xnu-driver` starts a native XNU APFS implementation.
-TWRP is deliberately outside the filesystem-driver boundary: it only needs
-to flash the selected boot artifact. XNU itself must understand and mount
-USERDATA.
+This branch contains a read-only host parser, not a mountable filesystem.
+Do not format, migrate, or boot the device's USERDATA with it. TWRP only needs
+to flash artifacts; the eventual XNU filesystem provider must understand APFS.
 
-This work is **not yet a mountable filesystem** and must not be used to
-format, migrate, or boot the device's USERDATA partition.
+## Implemented
 
-## Implemented first slice
+- Bounded NXSB probe with APFS Fletcher-64 complemented checksum validation.
+- Checkpoint descriptor-ring scan for contiguous descriptor areas.
+- Checkpoint-map object validation (physical object type, checksum, XID,
+  flags, bounded entry count and entry-field sanity).
+- Newest candidate NXSB selection, requiring a preceding complete checkpoint
+  map with the same XID.
+- Container OMAP object header, OMAP key, and OMAP value decoders.
+- NXSB metadata extraction for container OMAP physical address, spaceman and
+  reaper OIDs, and volume OID array.
 
-`common/apfs/b2l_apfs_probe.[ch]` provides a bounded, read-only NXSB probe:
+## Deliberate limits
 
-- reads the candidate partition through a caller-supplied bounded block reader;
-- validates the NXSB signature, object type, block-size range and geometry;
-- checks that the declared container extent fits the candidate partition;
-- verifies the APFS Fletcher-64 object checksum;
-- returns the container UUID and feature flags.
+This first checkpoint slice supports only a contiguous descriptor ring and a
+single-block checkpoint map. It rejects fragmented descriptor areas and
+multiple map blocks rather than guessing. It does not yet traverse the
+descriptor-area mapping B-tree, aggregate checkpoint-map chains, walk the
+OMAP B-tree, resolve OIDs to physical blocks, or decode volume OMAPs. No code
+is linked into XNU and no device or APFS image test has been performed.
 
-The parser has no allocation, no global state, and no write path. It is kept
-outside the kernel overlay until the standalone tests and the XNU integration
-can be reviewed independently.
+## Next parser work
 
-## Required next milestones
-
-1. **Host tests:** synthetic valid/invalid NXSB blocks, checksum corruption,
-   integer overflow, short partition and short-read cases.
-2. **Checkpoint discovery:** scan the checkpoint descriptor area, validate
-   checkpoint-map objects and select the newest internally consistent NXSB.
-3. **Container object map:** resolve volume-superblock OIDs safely.
-4. **Volume object map and filesystem tree:** B-tree traversal, inode,
-   directory, extent, xattr and sibling-link records.
-5. **Read-only VFS:** vnode operations and correct stat/lookup/readdir/read
-   semantics, first against generated macOS APFS images.
-6. **iOS metadata compatibility:** ownership, modes, xattrs, resource forks,
-   hard links, clone semantics and compression.
-7. **Writable APFS:** copy-on-write object updates, transaction/checkpoint
-   publication, flush ordering and crash recovery. No write enablement before
-   power-loss and corruption tests.
-8. **B2L root selection:** register the APFS VFS provider and select the
-   validated USERDATA partition without changing the existing HFS default.
-9. **Native app installation:** test the actual iOS staging path and its
-   desired-state/signature decisions after the filesystem semantics work.
-
-## Compatibility constraints
-
-The first implementation targets the unencrypted APFS container format
-generated for the selected iOS 26.6.2 IPSW. It must explicitly reject unknown
-incompatible feature bits. Encrypted containers, snapshots, sealed system
-volumes, fusion layouts and newer format revisions remain unsupported until
-their behavior is implemented and tested. The current B2L development
-environment does not provide SEP-backed data protection.
+1. Fragmented checkpoint-area B-tree resolution and checkpoint-map chains.
+2. OMAP B-tree traversal with xid-version selection for virtual OIDs.
+3. Container object resolution, volume superblocks and volume OMAPs.
+4. Filesystem B-tree traversal and file data extents.
+5. Read-only XNU VFS integration and generated APFS image validation.
+6. iOS metadata semantics and app-install validation.
+7. Writable APFS only after COW, checkpoint publication, flush-ordering and
+   crash-recovery tests.
 
 ## References
 
-- Apple File System format reference:
+- Apple File System Reference:
   https://developer.apple.com/support/downloads/Apple-File-System-Reference.pdf
-- Independent format research and test oracle:
-  https://github.com/libyal/libfsapfs
-- The libfsapfs project describes itself as experimental and read-only for
-  supported APFS v2 formats; it is a validation reference, not a kernel
-  dependency.
+- libfsapfs format research:
+  https://github.com/libyal/libfsapfs/blob/main/documentation/Apple%20File%20System%20(APFS).asciidoc

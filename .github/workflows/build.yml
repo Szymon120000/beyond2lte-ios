@@ -400,6 +400,11 @@ jobs:
       - name: Run host loader tests (ASan/UBSan)
         run: scripts/test-loader.sh
 
+      - name: Run APFS parser tests (ASan/UBSan)
+        run: |
+          bash scripts/test-apfs-probe.sh
+          sh scripts/test-apfs-checkpoint.sh
+
       - name: Build XNU kernel (DEVELOPMENT ARM64 B2L)
         run: |
           scripts/build-kernel.sh CWARNFLAGS=-w CXXWARNFLAGS=-w

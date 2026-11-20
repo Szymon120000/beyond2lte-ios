@@ -31,7 +31,12 @@ fletcher64_apfs(const uint8_t *block, size_t length)
         sum1 = (sum1 + word) % modulus;
         sum2 = (sum2 + sum1) % modulus;
     }
-    return (sum2 << 32) | sum1;
+    /* APFS stores the complemented Fletcher result, not the raw sums. */
+    {
+        uint64_t lower = 0xffffffffULL - ((sum1 + sum2) % modulus);
+        uint64_t upper = 0xffffffffULL - ((sum1 + lower) % modulus);
+        return (upper << 32) | lower;
+    }
 }
 
 int

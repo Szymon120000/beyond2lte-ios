@@ -26,7 +26,9 @@ static uint64_t checksum(const uint8_t *p, size_t n) {
         uint32_t w=(i<8)?0:le32(p+i);
         a=(a+w)%0xffffffffULL; b=(b+a)%0xffffffffULL;
     }
-    return (b<<32)|a;
+    { uint64_t lo=0xffffffffULL-((a+b)%0xffffffffULL);
+      uint64_t hi=0xffffffffULL-((a+lo)%0xffffffffULL);
+      return (hi<<32)|lo; }
 }
 static int read_image(void *ctx, uint64_t off, void *dst, size_t n) {
     (void)ctx;
