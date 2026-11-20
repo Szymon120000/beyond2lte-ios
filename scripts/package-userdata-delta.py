@@ -74,7 +74,11 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        archive.write(UPDATER_SOURCE, UPDATER_PATH, compress_type=zipfile.ZIP_STORED)
+        updater_info = zipfile.ZipInfo(UPDATER_PATH)
+        updater_info.create_system = 3
+        updater_info.external_attr = (stat.S_IFREG | 0o755) << 16
+        updater_info.compress_type = zipfile.ZIP_STORED
+        archive.writestr(updater_info, UPDATER_SOURCE.read_bytes())
         lines = []
         for rel, item in sorted(changed):
             _, sha, mode, source = item
