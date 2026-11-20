@@ -5,6 +5,7 @@
 #define B2L_EXEC_GRAPHICS_DIAG_H
 #if defined(ARM64_BOARD_CONFIG_B2L)
 extern int b2l_apps_cache_is_ready(void);
+extern int b2l_compat_is_ready(void);
 #endif
 static int
 b2l_exec_runtime_compat(struct image_params *imgp, int pointer_size, int ready)
@@ -55,7 +56,7 @@ static int
 b2l_exec_graphics_diag(struct image_params *imgp, int pointer_size)
 {
 #if defined(ARM64_BOARD_CONFIG_B2L)
-	int compat_error = b2l_exec_runtime_compat(imgp, pointer_size, b2l_apps_cache_is_ready());
+	int compat_error = b2l_exec_runtime_compat(imgp, pointer_size, b2l_compat_is_ready());
 	if (compat_error) return compat_error;
 #else
 	(void)b2l_exec_runtime_compat;
