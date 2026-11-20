@@ -27,7 +27,6 @@ class DeltaPackageTests(unittest.TestCase):
             (old / "removed").write_text("keep old file on device")
             (new / "added").write_text("new file")
             output = root / "delta.zip"
-            MODULE.main = MODULE.main
             import sys
             previous = sys.argv
             try:
