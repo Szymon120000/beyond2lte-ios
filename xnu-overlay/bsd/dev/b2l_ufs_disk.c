@@ -517,7 +517,8 @@ static void b2l_start_system_log(void)
  b2l_aux_log_reader.writable_size=layout.log_size;
  const struct b2l_log_sink sink={b2l_aux_log_read,b2l_aux_log_write,b2l_aux_log_sync,&b2l_aux_log_reader,layout.log_size};
  error=b2l_log_start(&sink);
- if(error)printf("B2L LOG: provisioned region rejected error=%d\n",error);
+ if(error)printf("B2L LOG: provisioned region rejected error=%d%s\n",error,
+     error==B2L_LOG_INVALID_HEADER?"; legacy 16 MiB header, run b2l-opt.sh init-log":"");
  else {
   b2l_aux_cache_index=layout.index;b2l_aux_cache_size=layout.hfs_size;
   printf("B2L LOG: SYSTEM p%u persistent console enabled; HFS cache bytes=%llu; log bytes=%llu\n",layout.index,layout.hfs_size,layout.log_size);
