@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: MIT
- * APFS object-map structures; bounded decoding only, no tree traversal yet.
+ * APFS object-map structures and bounded fixed-KV tree lookup.
  */
 #ifndef B2L_APFS_OMAP_H
 #define B2L_APFS_OMAP_H

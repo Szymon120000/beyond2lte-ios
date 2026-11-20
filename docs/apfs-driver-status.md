@@ -9,40 +9,44 @@ to flash artifacts; the eventual XNU filesystem provider must understand APFS.
 ## Implemented parser layers
 
 - Bounded NXSB probe with APFS Fletcher-64 complemented checksum validation.
-- Checkpoint descriptor-ring discovery for contiguous descriptor areas.
-- Fragmented descriptor-area lookup through a fixed-KV B-tree whose leaf values
-  are physical ranges; range arithmetic and node traversal are bounded.
+- Checkpoint descriptor-ring discovery for contiguous and fragmented layouts.
+  Fragmented layouts use a bounded fixed-KV B-tree lookup of physical ranges.
 - Checkpoint-map validation and multi-block chain aggregation, including
-  physical object type, checksum, XID, LAST flag, entry count and entry bounds.
+  physical object type, checksum, XID, LAST flag, entry count and container
+  range checks.
 - Newest internally consistent NXSB selection, with matching container UUID,
-  block geometry and XID; exports container OMAP address, spaceman/reaper OIDs
-  and volume OID array.
-- Container OMAP object header, OMAP key/value decoding and fixed-KV OMAP
-  B-tree lookup with xid-aware branch selection, deleted-value reporting,
-  checksum/offset validation, cycle detection and a 32-node depth limit.
-- Synthetic tests for contiguous and fragmented checkpoint descriptors,
-  checkpoint-map validation, OMAP structures and a fixed-KV OMAP leaf lookup.
+  block geometry and XID; extracts container OMAP physical address,
+  spaceman/reaper OIDs and volume OIDs.
+- Container OMAP object, key and value decoding.
+- Fixed-KV OMAP B-tree lookup with XID-aware branch selection, deleted-value
+  reporting, key ordering, checksum/offset/range validation, cycle detection
+  and a 32-node depth limit.
+- End-to-end container OMAP object -> B-tree -> virtual OID resolution helper.
+- Synthetic fixtures for contiguous/fragmented descriptor layouts,
+  checkpoint-map validation, OMAP leaf and branch traversal, and container
+  OMAP resolution.
+- ASan/UBSan host test scripts are part of the pull-request workflow.
 
 ## Deliberate limits
 
-This is still host-side parser code and is not linked into XNU. B-tree traversal
-currently accepts fixed-KV nodes only. Variable-KV trees, encrypted values,
-snapshots and unknown feature combinations are not supported. The descriptor
-mapping B-tree root and OMAP B-tree root are expected as physical block
-addresses from the caller; real-image validation is still required. No device
-mount, APFS write path or USERDATA migration has been attempted.
+This is host-side parser code and is not linked into XNU. B-tree traversal
+currently accepts fixed-KV nodes only. Variable-KV trees, snapshots, encrypted
+objects and unknown feature combinations are not supported. Fragmented
+checkpoint-area and OMAP tree roots are expected as physical block addresses;
+the exact address semantics must still be confirmed against independent real
+APFS images. No device mount, APFS write path or USERDATA migration has been
+attempted. CI has not yet completed for the current branch head.
 
 ## Next work
 
-1. Validate parser behavior against independent APFS images and a real iOS
-   26.6.2 container; resolve the exact OMAP-root address semantics.
-2. Add variable-KV node support and unsupported-feature policy.
-3. Resolve container metadata and volume superblocks, then each volume OMAP.
-4. Filesystem B-tree traversal and file data extents.
-5. Read-only XNU VFS integration and generated APFS image validation.
-6. iOS metadata semantics and app-install validation.
-7. Writable APFS only after COW, checkpoint publication, flush-ordering and
-   crash-recovery tests.
+1. Validate against independent APFS images and a real iOS 26.6.2 container.
+2. Add variable-KV node support and a stricter unsupported-feature policy.
+3. Resolve all container metadata and volume superblocks, then each volume OMAP.
+4. Implement filesystem B-tree traversal and file data extents.
+5. Build a read-only XNU VFS provider and validate against generated APFS images.
+6. Implement iOS metadata semantics and app-install validation.
+7. Implement writable APFS only after COW, checkpoint publication, flush
+   ordering and crash-recovery tests.
 
 ## References
 
