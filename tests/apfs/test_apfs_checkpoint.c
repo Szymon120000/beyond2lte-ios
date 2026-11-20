@@ -123,9 +123,9 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
   assert(inode.oid==2&&inode.parent_id==1&&inode.mode==0x41ed);
   assert(inode.owner==501&&inode.gid==20&&inode.value_size==92);
   assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
-      &vol,8,999,omap_scratch,sizeof(omap_scratch),node_scratch,
+      &vol,8,3,omap_scratch,sizeof(omap_scratch),node_scratch,
       sizeof(node_scratch),&inode)==B2L_APFS_FSTREE_ENOTFOUND);
-  fs[40]=0xff;seal(fs);
+  fs[40]=0xff;fs[41]=0xff;seal(fs);
   assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
       &vol,8,2,omap_scratch,sizeof(omap_scratch),node_scratch,
       sizeof(node_scratch),&inode)==B2L_APFS_FSTREE_EBOUNDS);
