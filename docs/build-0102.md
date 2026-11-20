@@ -51,3 +51,20 @@ and `B2L COMPAT: runtime compatibility library enabled for
 If the migration job or launch cache is still rejected, the generic
 `publication error=` line identifies that stage while rendering compatibility
 remains active.
+
+## Frame diagnostics in this build
+
+The owner confirmed the panel path itself is live (kernel text console, then
+the Apple logo, then the lock screen on working boots). A stall at the logo is
+therefore an empty compositor scene, not a frozen panel. To measure it the
+framebuffer still logs `B2L FB: swap <n> layer 0 pid <pid> surface ...` and now
+also `B2L FB SAMPLE: swap=<n> nonblack=<k>/64 min=... max=... mean=...` for the
+first swaps, so the next capture says whether the committed frames carry any
+content at all and which process committed them.
+
+Expected on success: swaps keep increasing past the two startup commits, the
+samples are not uniformly black, and the lock screen appears. If swaps stay at
+two while `SAMPLE` is all black, rendering compatibility is still not active;
+if frames carry content but never increase, the UI is idle by design or blocked
+outside CoreGraphics.
+
