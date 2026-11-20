@@ -225,17 +225,28 @@ static void learn(struct request*q,struct cache_worker*w){
  if(b2l_ncs_read(&store,index,&old)){
   __atomic_fetch_add(&failures,1,__ATOMIC_RELAXED);__atomic_store_n(&ready,0,__ATOMIC_RELEASE);goto unlock;
  }
+ /* Only a keyed cell is a live record. A cell without a key is free space,
+  * even when it still holds a record: the header high-water mark was reset, or
+  * a reclaim was interrupted. Those cells must be reused instead of compared.
+  * The scan starts at the first keyless slot, so treating one stale record as
+  * a live conflict blocks every page behind it forever (learned stays 0 and
+  * next_free never advances). */
+ int owner=store.keys[index].inode!=0;
+ int fresh=0;
  if(old){
-  if(b2l_nc_u64(old+16)!=ino||b2l_nc_u64(old+24)!=size||memcmp(old+40,uuid,16)||b2l_nc_u32(old+56)!=kind||b2l_nc_page_state(old,page,len)<0){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto unlock;}
-  memcpy(record,old,B2L_NC_COPY);
- }else{
+  if(b2l_nc_u64(old+16)!=ino||b2l_nc_u64(old+24)!=size||memcmp(old+40,uuid,16)||b2l_nc_u32(old+56)!=kind||b2l_nc_page_state(old,page,len)<0){
+   if(owner){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto unlock;}
+   fresh=1;
+  }else memcpy(record,old,B2L_NC_COPY);
+ }else fresh=1;
+ if(fresh){
   memset(record,0,B2L_NC_COPY);memcpy(record,"B2LNCREC",8);b2l_nc_p64(record+16,ino);b2l_nc_p64(record+24,size);b2l_nc_p64(record+32,po);
   memcpy(record+40,uuid,16);b2l_nc_p32(record+56,kind);b2l_nc_p32(record+60,len);
   memcpy(record+B2L_NC_DATA,page,4096);memcpy(record+B2L_NC_DATA+4096,page,4096);
  }
  unsigned at=(unsigned)(off-po);uint32_t original=b2l_nc_u32(record+B2L_NC_DATA+at),expected;
  if(!b2l_nc_native(original,&expected)||expected!=native){__atomic_fetch_add(&skipped,1,__ATOMIC_RELAXED);goto unlock;}
- if(b2l_nc_u32(record+B2L_NC_DATA+4096+at)==native)goto unlock;
+ if(owner&&b2l_nc_u32(record+B2L_NC_DATA+4096+at)==native)goto unlock;
  b2l_nc_p32(record+B2L_NC_DATA+4096+at,native);
  /* A/B write + flush + readback stays serialized through RAM publication;
   * workers cannot lose same-page updates or overwrite the last valid copy. */

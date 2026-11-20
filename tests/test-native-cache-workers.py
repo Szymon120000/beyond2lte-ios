@@ -132,6 +132,16 @@ int main(void){
   assert(!ready&&failures==1&&learned==1&&writes==2);
   assert(!memcmp(slot(0),old,sizeof(old)));assert(!memcmp(disk+B2L_NC_HEADER,old,sizeof(old)));
  }
+ // A header reset leaves a valid record behind in a keyless cell. The learner
+ // must claim that cell; comparing against it as if it were live would skip
+ // every page and never advance next_free.
+ reset();struct request stale={&files[0],4096,0xd65f0fff};learn(&stale,&contexts[0]);assert(learned==1);
+ memset(keys,0,sizeof(keys));memset(buckets,0,sizeof(buckets));store.live=0;store.used=0;store.next_free=0;
+ store.header_copy=0;store.generation=0;assert(!b2l_nc_header_v2(store.headers,store.id,cache_io.bytes,0,1));
+ skipped=learned=writes=0;
+ struct request claimed={&files[1],4096,0xd65f0fff};learn(&claimed,&contexts[0]);
+ assert(learned==1&&!skipped&&store.used==1&&store.next_free==1&&keys[0].inode==files[1].ino);
+ {const uint8_t*r=slot(0);assert(r&&b2l_nc_u64(r+16)==files[1].ino);}
  reset();for(unsigned i=0;i<B2L_NC_SLOTS;i++)keys[i].inode=1000+i;store.next_free=B2L_NC_SLOTS;
  batch(0,0);assert(dropped==4&&!writes);
  reset();memcpy(files[0].bytes,"dyld_v1",7);memset(files[0].bytes+88,7,16);
