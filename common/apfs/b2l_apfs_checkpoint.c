@@ -17,7 +17,7 @@ static int descriptor_tree_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
  uint64_t *physical) {
  uint64_t seen[32],current=root; unsigned depth;
  for(depth=0;depth<32;depth++) {
-  uint64_t off,child=0,best_key=0,best_pa=0,best_len=0;
+  uint64_t off,child=0,best_key=0,best_pa=0,best_len=0,prev_key=0;int have_prev=0;
   uint32_t typ,flags,nkeys,toff,tlen,key_start,vals_end,vsize,i;
   int leaf,have=0;
   for(i=0;i<depth;i++)if(seen[i]==current)return B2L_APFS_CKPT_EFORMAT;
@@ -50,6 +50,8 @@ static int descriptor_tree_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
    if(kp+8u>vals_end||vp+vsize>vals_end||vp<key_start||
       !(kp+8u<=vp||vp+vsize<=kp))return B2L_APFS_CKPT_EBOUNDS;
    {uint64_t k=r64(p+kp);
+    if(have_prev&&k<prev_key)return B2L_APFS_CKPT_EFORMAT;
+    prev_key=k;have_prev=1;
     if(leaf) {
      if(k<=logical&&(!have||k>best_key)) {
       best_key=k;best_pa=r64(p+vp);best_len=r64(p+vp+8);have=1;
@@ -108,6 +110,10 @@ int b2l_apfs_discover_checkpoint(b2l_apfs_read_fn fn,void*ctx,uint64_t devsz,con
   if(xid!=cur_xid){cur_xid=xid;cur_maps=0;cur_entries=0;cur_flags=0;complete=0;}
   if(typ==12u){
    if(b2l_apfs_validate_checkpoint_map(buf,bs,xid,&fl,&n)!=0)continue;
+   {uint32_t e;for(e=0;e<n;e++){const uint8_t *m=buf+40+(size_t)e*40;
+     uint64_t pa=r64(m+32),bytes=r32(m+8),span=(bytes+bs-1u)/bs;
+     if(pa>=blocks||span>blocks-pa)return B2L_APFS_CKPT_EBOUNDS;
+    }}
    if(complete || cur_entries>UINT32_MAX-n)return B2L_APFS_CKPT_EFORMAT;
    cur_maps++;cur_entries+=n;cur_flags=fl;
    complete=(fl&B2L_APFS_CHECKPOINT_MAP_LAST)!=0;

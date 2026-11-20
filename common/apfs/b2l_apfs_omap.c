@@ -63,7 +63,7 @@ int b2l_apfs_omap_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
  for(depth=0;depth<OMAP_MAX_DEPTH;depth++) {
   uint64_t off; uint32_t objtype,flags,nkeys,table_off,table_len;
   uint32_t entry_size,key_start,values_end,val_size,i;
-  int leaf; uint64_t child=0,best_xid=0; int have=0,best_status=B2L_APFS_OMAP_EBOUNDS;
+  int leaf; uint64_t child=0,best_xid=0,prev_oid=0,prev_xid=0; int have=0,have_prev=0,best_status=B2L_APFS_OMAP_EBOUNDS;
   for(i=0;i<depth;i++) if(seen[i]==current) return B2L_APFS_OMAP_EBOUNDS;
   seen[depth]=current;
   if(current>=blocks||current>UINT64_MAX/bs) return B2L_APFS_OMAP_EBOUNDS;
@@ -103,9 +103,17 @@ int b2l_apfs_omap_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
      return B2L_APFS_OMAP_EBOUNDS;
    if(b2l_apfs_decode_omap_key(p+ko,16,&k)!=B2L_APFS_OMAP_OK)
      return B2L_APFS_OMAP_EBOUNDS;
+   if(have_prev&&(k.oid<prev_oid||(k.oid==prev_oid&&k.xid<prev_xid)))
+     return B2L_APFS_OMAP_EBOUNDS;
+   prev_oid=k.oid;prev_xid=k.xid;have_prev=1;
    if(leaf) {
     if(k.oid==target_oid&&k.xid<=max_xid&&(!have||k.xid>best_xid)) {
      int vr=b2l_apfs_decode_omap_value(p+vo,16,found_value);
+     if(vr==B2L_APFS_OMAP_OK) {
+      uint64_t span=((uint64_t)found_value->size+bs-1u)/bs;
+      if(found_value->paddr>=blocks||span>blocks-found_value->paddr)
+       return B2L_APFS_OMAP_EBOUNDS;
+     }
      *found_key=k; best_xid=k.xid; have=1; best_status=vr;
     }
    } else if(key_leq(k.oid,k.xid,target_oid,max_xid)) {
