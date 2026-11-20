@@ -2,6 +2,7 @@
 #include "../../common/apfs/b2l_apfs_checkpoint.h"
 #include "../../common/apfs/b2l_apfs_omap.h"
 #include "../../common/apfs/b2l_apfs_volume.h"
+#include "../../common/apfs/b2l_apfs_fstree.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -97,5 +98,36 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
   assert(b2l_apfs_resolve_volume_root(rd,NULL,sizeof(disk),BS,BLOCKS,&vol,
       8,omap_scratch,sizeof(omap_scratch),tree_scratch,
       sizeof(tree_scratch),&k,&v)==B2L_APFS_OMAP_OK);
+ }
+
+ /* FSTREE variable-KV root leaf: find and decode the root inode (OID 2). */
+ {uint8_t *fs=disk+10*BS;struct b2l_apfs_volume_info vol;
+  struct b2l_apfs_inode_info inode;uint8_t omap_scratch[BS],node_scratch[BS];
+  memset(fs,0,BS);w64(fs+8,66);w64(fs+16,12);
+  w32(fs+24,0x80000002u);w32(fs+28,0x0eu);
+  w16(fs+32,3);w16(fs+34,0);w32(fs+36,1);
+  w16(fs+40,0);w16(fs+42,8);
+  w16(fs+56,0);w16(fs+58,8);w16(fs+60,92);w16(fs+62,92);
+  w64(fs+64,(3ULL<<60)|2ULL);
+  w64(fs+BS-40-92,1);w64(fs+BS-40-92+8,0);
+  w64(fs+BS-40-92+16,100);w64(fs+BS-40-92+24,200);
+  w64(fs+BS-40-92+32,300);w64(fs+BS-40-92+40,400);
+  w64(fs+BS-40-92+48,2);w32(fs+BS-40-92+56,0);
+  w32(fs+BS-40-92+72,501);w32(fs+BS-40-92+76,20);
+  w16(fs+BS-40-92+80,0x41ed);seal(fs);
+  memset(&vol,0,sizeof(vol));vol.xid=12;vol.omap_oid=8;
+  vol.root_tree_oid=66;vol.root_tree_type=0x80000002u;
+  assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
+      &vol,8,2,omap_scratch,sizeof(omap_scratch),node_scratch,
+      sizeof(node_scratch),&inode)==B2L_APFS_FSTREE_OK);
+  assert(inode.oid==2&&inode.parent_id==1&&inode.mode==0x41ed);
+  assert(inode.owner==501&&inode.gid==20&&inode.value_size==92);
+  assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
+      &vol,8,999,omap_scratch,sizeof(omap_scratch),node_scratch,
+      sizeof(node_scratch),&inode)==B2L_APFS_FSTREE_ENOTFOUND);
+  fs[40]=0xff;seal(fs);
+  assert(b2l_apfs_fstree_lookup_inode(rd,NULL,sizeof(disk),BS,BLOCKS,
+      &vol,8,2,omap_scratch,sizeof(omap_scratch),node_scratch,
+      sizeof(node_scratch),&inode)==B2L_APFS_FSTREE_EBOUNDS);
  }
  puts("APFS checkpoint and OMAP decoder tests passed");return 0;}
