@@ -92,6 +92,7 @@ int b2l_apfs_fstree_lookup_inode(b2l_apfs_read_fn fn,void *ctx,
   if(fn(ctx,off,omap,bs)!=0) return B2L_APFS_FSTREE_EIO;
  }
  rc=b2l_apfs_decode_omap(omap,bs,&oi);
+ if(rc==B2L_APFS_OMAP_ECHECKSUM) return B2L_APFS_FSTREE_ECHECKSUM;
  if(rc!=B2L_APFS_OMAP_OK) return B2L_APFS_FSTREE_ETYPE;
  if(oi.tree_oid>=blocks) return B2L_APFS_FSTREE_EBOUNDS;
 
@@ -111,6 +112,9 @@ int b2l_apfs_fstree_lookup_inode(b2l_apfs_read_fn fn,void *ctx,
   rc=b2l_apfs_omap_lookup(fn,ctx,devsz,bs,blocks,oi.tree_oid,
       current_oid,volume->xid,omap,omap_scratchsz,&map_key,&map_value);
   if(rc==B2L_APFS_OMAP_EDELETED) return B2L_APFS_FSTREE_ENOTFOUND;
+  if(rc==B2L_APFS_OMAP_EDELETED) return B2L_APFS_FSTREE_ENOTFOUND;
+  if(rc==B2L_APFS_OMAP_ECHECKSUM) return B2L_APFS_FSTREE_ECHECKSUM;
+  if(rc==B2L_APFS_OMAP_ETYPE) return B2L_APFS_FSTREE_ETYPE;
   if(rc!=B2L_APFS_OMAP_OK) return B2L_APFS_FSTREE_EBOUNDS;
   if(map_value.size<bs||map_value.paddr>=blocks||
      map_value.paddr>UINT64_MAX/bs)
