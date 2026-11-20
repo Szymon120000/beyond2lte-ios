@@ -90,7 +90,11 @@ b2l_compat_emulate_reference(uint32_t i, struct b2l_compat_ctx *c,
         c->pc > UINT64_MAX - 4u) return B2L_COMPAT_FAULT;
     next = c->pc + 4u;
     if (kind == BRANCH) next = reg_zr(c, rn);
-    if ((next & 3u) != 0 || o->validate_pc(next, o->opaque) != 0)
+    /* Falling through to pc+4 is not a permission decision: if the next page
+     * is not executable the hardware faults on its own fetch. Only branch
+     * targets need the expensive execute-map walk. */
+    if ((next & 3u) != 0 ||
+        (next != c->pc + 4u && o->validate_pc(next, o->opaque) != 0))
         return B2L_COMPAT_FAULT;
 
     /* Snapshot operands before any destination register changes. */
@@ -154,7 +158,8 @@ b2l_compat_emulate(uint32_t i, struct b2l_compat_ctx *c,
         if (o == NULL || o->mode != B2L_COMPAT_MODE_STRIPPED ||
             o->validate_pc == NULL || (c->pc & 3u) != 0 ||
             c->pc > UINT64_MAX - 4u || (candidate.pc & 3u) != 0 ||
-            o->validate_pc(candidate.pc, o->opaque) != 0)
+            (candidate.pc != c->pc + 4u &&
+             o->validate_pc(candidate.pc, o->opaque) != 0))
             return B2L_COMPAT_FAULT;
         *c = candidate;
         return B2L_COMPAT_OK;

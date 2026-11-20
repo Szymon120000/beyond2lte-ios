@@ -257,11 +257,17 @@ static void learn(struct request*q,struct cache_worker*w){
 }
 void b2l_native_cache_observe(uint64_t pc,uint32_t insn){
  uint32_t replacement;if(!__atomic_load_n(&ready,__ATOMIC_RELAXED)||!b2l_nc_native(insn,&replacement))return;
+ /* Unlocked pre-check: the hot trap path is ~330k calls/s, and taking the
+  * global queue_lock for an already-queued instruction was the single largest
+  * addition it made. A torn hint read can only produce a duplicate attempt,
+  * which the locked re-check below discards. */
+ vm_map_t map=current_map();uint64_t tag=((uint64_t)(uintptr_t)map>>4)^pc^((uint64_t)insn<<17);if(!tag)tag=1;
+ unsigned h=(unsigned)((tag^(tag>>19)^(tag>>37))&(HINTS-1));
+ if(__atomic_load_n(&hints[h],__ATOMIC_RELAXED)==tag)return;
  /* Try-lock: the exception path never waits for the worker or storage. */
  disable_preemption();
  if(__atomic_exchange_n(&queue_lock,1,__ATOMIC_ACQUIRE)){enable_preemption();__atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);return;}
- unsigned notify=0;vm_map_t map=current_map();uint64_t tag=((uint64_t)(uintptr_t)map>>4)^pc^((uint64_t)insn<<17);if(!tag)tag=1;
- unsigned h=(unsigned)((tag^(tag>>19)^(tag>>37))&(HINTS-1));
+ unsigned notify=0;
  if(hints[h]!=tag){unsigned next=(head+1)%QSIZE;if(next!=tail){vm_map_reference(map);queue[head]=(struct request){map,pc,insn};head=next;hints[h]=tag;notify=1;__atomic_store_n(&pending,(head+QSIZE-tail)%QSIZE,__ATOMIC_RELEASE);__atomic_fetch_add(&queued,1,__ATOMIC_RELAXED);}else __atomic_fetch_add(&dropped,1,__ATOMIC_RELAXED);}
  __atomic_store_n(&queue_lock,0,__ATOMIC_RELEASE);enable_preemption();
  if(notify)thread_wakeup_one((event_t)&queue);

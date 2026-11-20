@@ -157,7 +157,6 @@ b2l_compat_read_acquire(uint64_t address, unsigned width, uint64_t *out, void *o
 static int
 b2l_compat_validate_pc(uint64_t address, void *opaque)
 {
-    uint32_t instruction;
     static unsigned check_samples;
     bool trace = check_samples < 2;
     if (trace) { ++check_samples; b2l_early_trace("B2L COMPAT: execute-map check begin pc=0x%llx\n", address); }
@@ -187,11 +186,10 @@ b2l_compat_validate_pc(uint64_t address, void *opaque)
     }
     if (measurement && measurement->sample) measurement->vm_ticks += mach_absolute_time()-began;
     if (!executable) return -1;
-    /* Release all map locks BEFORE faultable instruction copyin. */
-    if (trace) b2l_early_trace("B2L COMPAT: execute-map check passed; copyin begin\n");
-    int error = copyin_atomic32(address, &instruction);
-    if (trace) b2l_early_trace("B2L COMPAT: execute-PC copyin result=%d\n", error);
-    return error ? -1 : 0;
+    /* The caller already holds the fetched instruction. Re-reading it through
+     * a faultable copy added a second VM walk per PAC trap for no result. */
+    if (trace) b2l_early_trace("B2L COMPAT: execute-map check passed\n");
+    return 0;
 }
 
 static int
@@ -254,7 +252,10 @@ b2l_arm64e_compat_emulate(arm_saved_state_t *state, uint32_t instruction)
     context.sp = get_saved_state_sp(state);
     context.pc = get_saved_state_pc(state);
     context.cpsr = get_saved_state_cpsr(state);
-    if (b2l_compat_validate_pc(context.pc, &measurement)) return false;
+    /* Hardware already fetched and started this instruction, so the faulting
+     * PC is executable by construction. The VM permission walk is only needed
+     * for branch targets, which the decoder validates itself. */
+    if ((context.pc & 3u) || !b2l_user_range(context.pc, sizeof(uint32_t))) return false;
     const struct b2l_compat_ops operations = {
         .mode = B2L_COMPAT_MODE_STRIPPED,
         .read = b2l_compat_read, .read_acquire = b2l_compat_read_acquire,
