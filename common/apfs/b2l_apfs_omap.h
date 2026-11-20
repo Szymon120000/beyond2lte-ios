@@ -34,7 +34,12 @@ int b2l_apfs_resolve_container_oid(b2l_apfs_read_fn read_fn,void *context,
     void *omap_scratch,size_t omap_scratch_size,
     void *tree_scratch,size_t tree_scratch_size,
     struct b2l_apfs_omap_key *found_key,struct b2l_apfs_omap_value *found_value);
-/* Resolve a volume FSTREE virtual OID through its physical volume OMAP.\n * volume_omap_paddr is volume.omap_oid for a live volume. For a snapshot\n * whose APSB has omap_oid == 0, pass the live volume OMAP block address;\n * lookup still uses the snapshot superblock XID.\n */\nint b2l_apfs_resolve_volume_root(b2l_apfs_read_fn read_fn,void *context,\n    uint64_t device_size,uint32_t block_size,uint64_t block_count,\n    const struct b2l_apfs_volume_info *volume,uint64_t volume_omap_paddr,\n    void *omap_scratch,size_t omap_scratch_size,\n    void *tree_scratch,size_t tree_scratch_size,\n    struct b2l_apfs_omap_key *found_key,struct b2l_apfs_omap_value *found_value);\nint b2l_apfs_omap_lookup(b2l_apfs_read_fn read_fn,void *context,
+/* Resolve a volume FSTREE virtual OID through its physical volume OMAP.
+ * volume_omap_paddr is volume.omap_oid for a live volume. For a snapshot
+ * whose APSB has omap_oid == 0, pass the live volume OMAP block address;
+ * lookup still uses the snapshot superblock XID.
+ */
+int b2l_apfs_resolve_volume_root(b2l_apfs_read_fn read_fn,void *context,\n    uint64_t device_size,uint32_t block_size,uint64_t block_count,\n    const struct b2l_apfs_volume_info *volume,uint64_t volume_omap_paddr,\n    void *omap_scratch,size_t omap_scratch_size,\n    void *tree_scratch,size_t tree_scratch_size,\n    struct b2l_apfs_omap_key *found_key,struct b2l_apfs_omap_value *found_value);\nint b2l_apfs_omap_lookup(b2l_apfs_read_fn read_fn,void *context,
     uint64_t device_size,uint32_t block_size,uint64_t block_count,
     uint64_t root_paddr,uint64_t target_oid,uint64_t max_xid,
     void *scratch,size_t scratch_size,struct b2l_apfs_omap_key *found_key,
