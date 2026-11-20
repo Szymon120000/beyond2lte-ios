@@ -76,7 +76,7 @@ int b2l_apfs_fstree_lookup_inode(b2l_apfs_read_fn fn,void *ctx,
  if(!fn||!volume||!omap||!node||!out||!inode_oid||
     bs<4096u||bs>65536u||(bs&(bs-1u))||blocks==0||
     blocks>devsz/bs||omap_scratchsz<bs||node_scratchsz<bs||
-    !volume->xid||!volume->root_tree_oid||
+    !volume->xid||!volume->root_tree_oid||inode_oid>B2L_APFS_OID_MASK||
     (volume->root_tree_type&0xffffu)!=2u||
     (volume->root_tree_type&0xc0000000u)!=0x80000000u||
     !volume_omap_pa||(volume->omap_oid&&volume_omap_pa!=volume->omap_oid)||
@@ -111,7 +111,6 @@ int b2l_apfs_fstree_lookup_inode(b2l_apfs_read_fn fn,void *ctx,
 
   rc=b2l_apfs_omap_lookup(fn,ctx,devsz,bs,blocks,oi.tree_oid,
       current_oid,volume->xid,omap,omap_scratchsz,&map_key,&map_value);
-  if(rc==B2L_APFS_OMAP_EDELETED) return B2L_APFS_FSTREE_ENOTFOUND;
   if(rc==B2L_APFS_OMAP_EDELETED) return B2L_APFS_FSTREE_ENOTFOUND;
   if(rc==B2L_APFS_OMAP_ECHECKSUM) return B2L_APFS_FSTREE_ECHECKSUM;
   if(rc==B2L_APFS_OMAP_ETYPE) return B2L_APFS_FSTREE_ETYPE;
