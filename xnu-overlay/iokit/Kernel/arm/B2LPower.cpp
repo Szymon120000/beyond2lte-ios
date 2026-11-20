@@ -252,16 +252,14 @@ class B2LPower : public IOService {
             if(found<8)first[found]=(uint8_t)a;
             ++found;
         }
-        IOLog("B2L POWER SCAN: %u device(s): %02x %02x %02x %02x %02x %02x %02x %02x charger_ack=%d
-",
+        IOLog("B2L POWER SCAN: %u device(s): %02x %02x %02x %02x %02x %02x %02x %02x charger_ack=%d\n",
             found,first[0],first[1],first[2],first[3],first[4],first[5],first[6],first[7],
             bbSawCharger);
     }
     void bbDump(const char *tag,uint8_t addr,uint8_t base){
         uint8_t v[8];
         for(unsigned i=0;i<8;++i)if(!bbRead(addr,(uint8_t)(base+i),&v[i],1))v[i]=0xee;
-        IOLog("B2L POWER DUMP %s: %02x: %02x %02x %02x %02x %02x %02x %02x %02x
-",
+        IOLog("B2L POWER DUMP %s: %02x: %02x %02x %02x %02x %02x %02x %02x %02x\n",
             tag,base,v[0],v[1],v[2],v[3],v[4],v[5],v[6],v[7]);
     }
     bool bitbangInit(){
