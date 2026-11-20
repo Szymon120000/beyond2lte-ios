@@ -113,8 +113,31 @@ static void progress_note(int r,unsigned event,uint64_t a,uint64_t b,uint64_t c,
     }
     __atomic_fetch_add(&progress_overflow,1,__ATOMIC_RELAXED);
 }
+/* Measured core clock, not a firmware claim. A chain of dependent integer adds
+ * retires one instruction per cycle on A55/A75/M4, so the ratio of retired
+ * instructions to CNTVCT ticks gives the real CPU frequency. This is the only
+ * way to tell whether the boot CPU is stuck at a bootloader OPP. */
+static uint64_t cpu_hz_probe(void)
+{
+    uint64_t best=0;
+    for(unsigned pass=0;pass<3;pass++){
+        uint64_t n=200000,x=1,t0=mach_absolute_time();
+        __asm__ volatile("1:\n\t.rept 63\n\tadd %0,%0,#1\n\t.endr\n\tsubs %1,%1,#1\n\tb.ne 1b"
+                         : "+r"(x),"+r"(n)::"cc");
+        uint64_t t1=mach_absolute_time(),ns=0;
+        absolutetime_to_nanoseconds(t1-t0,&ns);
+        if(!ns)continue;
+        uint64_t hz=(uint64_t)200000u*63u*1000000000ull/ns;
+        if(hz>best)best=hz;
+    }
+    return best;
+}
+
 void b2l_diag_progress(void)
 {
+    static int freq_reported;
+    if(!__atomic_exchange_n(&freq_reported,1,__ATOMIC_RELAXED))
+        b2l_diag_record("B2L CPU FREQ: hz=%llu cpu=%u\n",cpu_hz_probe(),(unsigned)cpu_number());
     int requested=0;PE_parse_boot_argn("b2l_diag",&requested,sizeof(requested));if(requested!=1)return;
     static const char *const names[]={"SpringBoard","backboardd","container","lsd","assetsd","tccd"};
     uint64_t now=progress_seconds();unsigned records=0,busy=0;
