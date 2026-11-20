@@ -44,6 +44,9 @@ static bool root_type(vnode_t vp,enum vtype t){return vp&&vp->type==(int)t;}
 #define CREATE 1
 #define OP_UNLINK 6
 #define OP_LINK 5
+#ifdef CAST_USER_ADDR_T
+#undef CAST_USER_ADDR_T
+#endif
 #define CAST_USER_ADDR_T(x) ((void *)(uintptr_t)(x))
 static const unsigned char b2l_apps_executable[1]={0},b2l_hfs_compat_dylib[1]={0},b2l_graphics_compat_dylib[1]={0};
 static bool b2l_apps_payload_equal(const unsigned char*s,size_t bytes,size_t off,const unsigned char*a,size_t n,bool native){
