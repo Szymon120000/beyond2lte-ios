@@ -164,6 +164,7 @@ int b2l_apfs_resolve_volume_root(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
     bs<4096||bs>65536||(bs&(bs-1))||omap_scratchsz<bs||
     tree_scratchsz<bs||!blocks||blocks>devsz/bs||
     !volume->xid||!volume->root_tree_oid||!volume_omap_pa||
+    (volume->omap_oid&&volume_omap_pa!=volume->omap_oid)||
     volume_omap_pa>=blocks||volume_omap_pa>UINT64_MAX/bs)
   return B2L_APFS_OMAP_EINVAL;
  off=volume_omap_pa*(uint64_t)bs;
