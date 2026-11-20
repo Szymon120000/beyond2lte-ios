@@ -64,7 +64,7 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
  {uint8_t *root=disk+7*BS,*leaf=disk+5*BS;
   memset(root,0,BS);w64(root+8,7);w64(root+16,7);w32(root+24,0x40000002);
   w32(root+32,5);w32(root+36,1);w16(root+40,0);w16(root+42,4);w16(root+56,0);w16(root+58,8);
-  w64(root+60,9);w64(root+4048,5);seal(root);
+  w64(root+60,9);w64(root+68,1);w64(root+4048,5);seal(root);
   memset(leaf,0,BS);w64(leaf+8,5);w64(leaf+16,7);w32(leaf+24,0x40000003);
   w32(leaf+32,6);w32(leaf+36,1);w16(leaf+40,0);w16(leaf+42,4);w16(leaf+56,0);w16(leaf+58,16);
   w64(leaf+60,9);w64(leaf+68,3);w32(leaf+4080,0);w32(leaf+4084,BS);w64(leaf+4088,5);seal(leaf);
