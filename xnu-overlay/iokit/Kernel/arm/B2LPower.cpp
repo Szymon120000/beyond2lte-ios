@@ -2,17 +2,23 @@
  * MAX77705 power path.
  *
  * Charger at USI hsi2c_45 (0x15D60000), 7-bit address 0x66; fuel gauge at
- * 0x36. Register layout and field scaling come from the Samsung
- * max77705 charger/fuel-gauge drivers; the transfer sequence is the proven
- * USI-I2C-v2 routine from B2LInput (same IP, different instance).
+ * 0x36 (both on the same bus). Register layout and field scaling come from
+ * the Samsung max77705 charger/fuel-gauge drivers.
+ *
+ * Two transports, tried in order:
+ *   1. the USI-I2C-v2 block at 0x15D60000, using the routine proven by
+ *      B2LInput for the touch controller;
+ *   2. GPIO bit-bang on the same two pads (gpm12.0 = SCL, gpm13.0 = SDA,
+ *      pinctrl@15C30000), for the case where that block's functional clock
+ *      is gated - this port has no CMU driver, so the engine never runs
+ *      there and only the pin controller is available.
  *
  * The phone has no Apple PMU, so booting iOS does not restore whatever
  * charger configuration Android's bootloader/driver left behind. This
- * service selects buck+charger mode, raises the USB input limit to a value
- * the charger can regulate, kicks the charger watchdog and reports gauge
+ * service selects buck+charger mode, raises the input limit to a value the
+ * charger can regulate, kicks the charger watchdog and reports gauge
  * progress to the persistent kernel log. Reads are validated before any
- * register is written, so an unclocked USI block can never be programmed
- * blind.
+ * register is written, so a dead bus can never be programmed blind.
  */
 #include <IOKit/IOService.h>
 #include <IOKit/IOLib.h>
@@ -54,14 +60,38 @@
  * automatically, so never ask for more than a plain USB port provides. */
 #define B2L_CHG_DIS_AICL     0x10u
 
+/* --- GPIO fallback for the charger bus ------------------------------------
+ * The USI-I2C block at 0x15D60000 accepts register reads and writes but never
+ * executes a transfer: CTL reads back a reset value and INT_STATUS stays zero,
+ * which is what an engine with a gated functional clock looks like. This port
+ * has no CMU/clock driver at all, so that block cannot be brought up here.
+ * The two wires are ordinary pads on the pin controller at 0x15850000, which
+ * is alive (touch input already runs through it), so the PMIC is reached by
+ * bit-banging the same bus. Open drain is emulated by driving low as an output
+ * and releasing as an input, letting the bus pull-ups win.
+ *
+ * Bank layout: 8 pads per bank, 0x20 bytes apart; CON at +0x00 (4 bits/pad),
+ * DAT at +0x04 (1 bit/pad), PUD at +0x08 (2 bits/pad, 2 = pull-up).
+ */
+#define B2L_BB_GPIO_PHYS   0x15C30000u   /* pinctrl holding gpm12/gpm13 */
+#define B2L_BB_SCL_BANK    12u          /* gpm12, pad 0 */
+#define B2L_BB_SCL_PIN     0u
+#define B2L_BB_SDA_BANK    13u          /* gpm13, pad 0 */
+#define B2L_BB_SDA_PIN     0u
+#define B2L_BB_HALF_US     5    /* 100 kHz */
+
 class B2LPower : public IOService {
     OSDeclareDefaultStructors(B2LPower);
     IOMemoryDescriptor *i2cDesc;
     IOMemoryMap *i2cMap;
+    IOMemoryDescriptor *gpioDesc;
+    IOMemoryMap *gpioMap;
     IOWorkLoop *loop;
     IOTimerEventSource *timer;
     volatile uint8_t *i2c;
+    volatile uint8_t *gpio;
     bool chargerReady, gaugeReady;
+    bool bitbang;                     /* hsi2c dead, use the pads directly */
     unsigned timeoutUS, transferFailures, ticks, probeAttempts;
     unsigned socTenths, vcellMv;
     int currentMa, tempTenths;
@@ -89,6 +119,140 @@ class B2LPower : public IOService {
         w(0,r(0)|(1u<<31));w(0,r(0)&~(1u<<31));
         w(0,8);w(8,0x00ffffff);
         w(0x40,r(0x40)|(1u<<31));
+    }
+
+    /* --- GPIO I2C ------------------------------------------------------
+     * One pin controller bank is 0x20 bytes: CON +0x00 (4 bits per pad,
+     * 0 = input, 1 = output), DAT +0x04 (1 bit per pad), PUD +0x08
+     * (2 bits per pad, 2 = pull-up).
+     */
+    uint32_t gR(unsigned bank,unsigned reg){
+        uint32_t v=*(volatile uint32_t*)(gpio+bank*0x20u+reg);
+        __asm__ volatile("dmb oshld":::"memory");
+        return v;
+    }
+    void gW(unsigned bank,unsigned reg,uint32_t v){
+        *(volatile uint32_t*)(gpio+bank*0x20u+reg)=v;
+        __asm__ volatile("dsb oshst":::"memory");
+    }
+    void bbFunc(unsigned bank,unsigned pin,unsigned func){
+        unsigned sh=(pin&7u)*4u;
+        uint32_t v=gR(bank,0);
+        v=(v&~(0xfu<<sh))|((func&0xfu)<<sh);
+        gW(bank,0,v);
+    }
+    void bbPullUp(unsigned bank,unsigned pin){
+        unsigned sh=(pin&7u)*2u;
+        uint32_t v=gR(bank,8);
+        v=(v&~(3u<<sh))|(2u<<sh);
+        gW(bank,8,v);
+    }
+    /* Drive low: set the data bit first, then the pad as output. Release:
+     * back to input and let the bus pull-up win. */
+    void bbLow(unsigned bank,unsigned pin){
+        gW(bank,4,gR(bank,4)&~(1u<<(pin&7u)));
+        bbFunc(bank,pin,1);
+    }
+    void bbRelease(unsigned bank,unsigned pin){ bbFunc(bank,pin,0); }
+    unsigned bbGet(unsigned bank,unsigned pin){
+        return (gR(bank,4)>>(pin&7u))&1u;
+    }
+    void bbWait(){ IODelay(B2L_BB_HALF_US); }
+    void bbStart(){
+        bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        bbWait();
+        bbLow(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        bbWait();
+        bbLow(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbWait();
+    }
+    void bbStop(){
+        bbLow(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        bbWait();
+        bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbWait();
+        bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        bbWait();
+    }
+    bool bbWriteByte(uint8_t b){
+        for(int i=7;i>=0;--i){
+            if((b>>i)&1)bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+            else bbLow(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+            bbWait();
+            bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+            bbWait();
+            bbLow(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+            bbWait();
+        }
+        bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        bbWait();
+        bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbWait();
+        bool ack=bbGet(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN)==0;
+        bbLow(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbWait();
+        return ack;
+    }
+    uint8_t bbReadByte(bool ack){
+        uint8_t v=0;
+        bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        for(int i=0;i<8;++i){
+            bbWait();
+            bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+            bbWait();
+            v=(uint8_t)((v<<1)|bbGet(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN));
+            bbLow(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+            bbWait();
+        }
+        if(ack)bbLow(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        else bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        bbWait();
+        bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbWait();
+        bbLow(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbWait();
+        bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        return v;
+    }
+    bool bbWrite(uint8_t addr,uint8_t reg,uint8_t value){
+        bbStart();
+        bool ok=bbWriteByte((uint8_t)(addr<<1));
+        ok=ok&&bbWriteByte(reg);
+        ok=ok&&bbWriteByte(value);
+        bbStop();
+        return ok;
+    }
+    bool bbRead(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n){
+        bbStart();
+        bool ok=bbWriteByte((uint8_t)(addr<<1));
+        ok=ok&&bbWriteByte(reg);
+        if(!ok){bbStop();return false;}
+        bbStart();
+        ok=bbWriteByte((uint8_t)((addr<<1)|1));
+        if(!ok){bbStop();return false;}
+        for(unsigned i=0;i<n;++i)buf[i]=bbReadByte(i+1<n);
+        bbStop();
+        return true;
+    }
+    bool bitbangInit(){
+        gpioDesc=IOMemoryDescriptor::withPhysicalAddress(B2L_BB_GPIO_PHYS,4096,kIODirectionInOut);
+        if(gpioDesc)gpioMap=gpioDesc->map(kIOMapInhibitCache);
+        if(!gpioMap)return false;
+        gpio=(volatile uint8_t*)gpioMap->getVirtualAddress();
+        if(!gpio)return false;
+        bbPullUp(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbPullUp(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        bbRelease(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        bbRelease(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        IODelay(50);
+        /* Both lines must idle high: the pull-ups are on the phone, so a low
+         * reading here means a stuck bus and every transfer would fail. */
+        unsigned scl=bbGet(B2L_BB_SCL_BANK,B2L_BB_SCL_PIN);
+        unsigned sda=bbGet(B2L_BB_SDA_BANK,B2L_BB_SDA_PIN);
+        IOLog("B2L POWER BB: scl=%u sda=%u %s\n",scl,sda,
+            (scl&&sda)?"idle high":"BUS STUCK LOW");
+        return true;
     }
     bool message(uint8_t addr,uint8_t *buf,unsigned n,bool read,bool stop);
     bool readRegs(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n);
@@ -160,6 +324,7 @@ bool B2LPower::message(uint8_t addr,uint8_t *buf,unsigned n,bool read,bool stop)
  * combined form (register address without STOP, repeated start into the
  * read); probe() tries that when the split form returns a dead-bus pattern. */
 bool B2LPower::readRegs(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n){
+    if(bitbang)return bbRead(addr,reg,buf,n);
     resetController();
     if(!message(addr,&reg,1,false,true))return false;
     return message(addr,buf,n,true,true);
@@ -171,6 +336,7 @@ bool B2LPower::readRegsCombined(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n
 }
 bool B2LPower::writeReg(uint8_t addr,uint8_t reg,uint8_t value){
     uint8_t pair[2]={reg,value};
+    if(bitbang)return bbWrite(addr,reg,value);
     resetController();
     return message(addr,pair,2,false,true);
 }
@@ -186,9 +352,27 @@ void B2LPower::probe(){
     uint8_t cnfg00=0,cnfg02=0,cnfg06=0,cnfg09=0,intok=0,details=0;
     bool ok00=false,ok02=false,ok06=false,ok09=false,okb2=false,okb3=false;
     bool combined=false;
-    for(unsigned pass=0;pass<2;++pass){
+    const char *path="split";
+    for(unsigned pass=0;pass<3;++pass){
+        /* Once the pads are bit-banging, the USI passes cannot add anything. */
+        if(bitbang&&pass<2)continue;
         combined=(pass==1);
         cnfg00=cnfg02=cnfg06=cnfg09=intok=details=0;
+        if(pass==2){
+            /* The USI block answers register accesses but never runs a
+             * transfer, i.e. its functional clock is gated and this port has
+             * no clock driver. Fall back to bit-banging the same two pads. */
+            if(!bitbang){
+                if(bitbangInit()){
+                    bitbang=true;
+                    path="bitbang";
+                    IOLog("B2L POWER: hsi2c dead, switching to GPIO bit-bang on gpm12.0/gpm13.0\n");
+                }else{
+                    IOLog("B2L POWER: GPIO bit-bang unavailable\n");
+                    break;
+                }
+            }
+        }
         if(combined){
             ok00=readRegsCombined(B2L_CHG_ADDR,CHG_CNFG_00,&cnfg00,1);
             ok02=readRegsCombined(B2L_CHG_ADDR,CHG_CNFG_02,&cnfg02,1);
@@ -213,7 +397,7 @@ void B2LPower::probe(){
         if(chargerReady)break;
     }
     IOLog("B2L POWER PROBE: attempt=%u path=%s ok=%d%d%d%d%d%d cnfg00=0x%02x cnfg02=0x%02x cnfg06=0x%02x cnfg09=0x%02x int_ok=0x%02x details=0x%02x\n",
-        probeAttempts,combined?"combined":"split",ok00,ok02,ok06,ok09,okb2,okb3,
+        probeAttempts,path,ok00,ok02,ok06,ok09,okb2,okb3,
         cnfg00,cnfg02,cnfg06,cnfg09,intok,details);
     if(chargerReady)configure(cnfg00,cnfg02,cnfg06,cnfg09);
     sample();
@@ -360,8 +544,9 @@ bool B2LPower::start(IOService *provider){
     if(!IOService::start(provider))return false;
     i2cDesc=IOMemoryDescriptor::withPhysicalAddress(0x15D60000,4096,kIODirectionInOut);
     if(i2cDesc)i2cMap=i2cDesc->map(kIOMapInhibitCache);
-    if(!i2cMap)return false;
-    i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
+    /* A missing USI mapping is not fatal: the GPIO path below does not need
+     * it, so the service still starts and probe() falls back. */
+    if(i2cMap)i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
     timeoutUS=50000;
     probe();
     loop=IOWorkLoop::workLoop();
@@ -382,11 +567,15 @@ void B2LPower::stop(IOService *provider){
     if(timer){timer->release();timer=nullptr;}
     if(i2cMap){i2cMap->release();i2cMap=nullptr;}
     if(i2cDesc){i2cDesc->release();i2cDesc=nullptr;}
+    if(gpioMap){gpioMap->release();gpioMap=nullptr;}
+    if(gpioDesc){gpioDesc->release();gpioDesc=nullptr;}
     IOService::stop(provider);
 }
 void B2LPower::free(){
     if(timer){timer->release();timer=nullptr;}
     if(i2cMap){i2cMap->release();i2cMap=nullptr;}
     if(i2cDesc){i2cDesc->release();i2cDesc=nullptr;}
+    if(gpioMap){gpioMap->release();gpioMap=nullptr;}
+    if(gpioDesc){gpioDesc->release();gpioDesc=nullptr;}
     IOService::free();
 }
