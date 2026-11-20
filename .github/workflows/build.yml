@@ -15,6 +15,10 @@ on:
         description: "Enable B2LTouchDxe in firmware profile"
         type: boolean
         default: true
+      native_cache:
+        description: "Enable the ARM64e persistent translation cache boot argument"
+        type: boolean
+        default: true
       runner:
         description: "Runner label to build on (hosted macOS runners are capacity-starved)"
         required: false
@@ -456,6 +460,12 @@ jobs:
       - name: Build XNU kernel (DEVELOPMENT ARM64 B2L)
         run: |
           scripts/build-kernel.sh CWARNFLAGS=-w CXXWARNFLAGS=-w
+
+      - name: Apply native cache boot option
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.native_cache == false }}
+        run: |
+          sed -i.bak 's/b2l_native_cache=1/b2l_native_cache=0/' uefi/XnuLoader/XnuLoader.c
+          grep -n 'b2l_native_cache=' uefi/XnuLoader/XnuLoader.c
 
       - name: Build UEFI loader and beyond2lte firmware profile
         env:
