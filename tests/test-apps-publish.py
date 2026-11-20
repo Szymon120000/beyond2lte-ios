@@ -72,7 +72,7 @@ static int vnode_open(const char *p,int fmode,int cmode,int flags,vnode_t *vpp,i
 static int vnode_close(vnode_t vp,int fmode,int ctx){(void)vp;(void)fmode;(void)ctx;return 0;}
 static int namei(struct nameidata *nd){vnode_t e=find(nd->ni_cnd.cn_nameptr);if(nd->op==CREATE){nd->ni_vp=e;nd->ni_dvp=&dirnode;return 0;}if(nd->op==DELETE){if(!e)return ENOENT;nd->ni_vp=e;nd->ni_dvp=&dirnode;return 0;}assert(0);return EINVAL;}
 static int VNOP_LINK(vnode_t vp,vnode_t dvp,struct componentname *cnp,int ctx){(void)dvp;(void)ctx;if(find(cnp->cn_nameptr))return EEXIST;vnode_t e=add(cnp->cn_nameptr);memcpy(e->data,vp->data,sizeof(e->data));e->bytes=vp->bytes;e->mode=vp->mode;e->links=2;vp->links=2;return 0;}
-static int VNOP_REMOVE(vnode_t dvp,vnode_t vp,struct componentname *cnp,int ctx){(void)dvp;(void)ctx;assert(find(cnp->cn_nameptr)==vp);vp->exists=0;if(vp->links)vp->links--;return 0;}
+static int VNOP_REMOVE(vnode_t dvp,vnode_t vp,struct componentname *cnp,int flags,int ctx){(void)dvp;(void)flags;(void)ctx;assert(find(cnp->cn_nameptr)==vp);vp->exists=0;if(vp->links)vp->links--;return 0;}
 static void lookup_done(struct nameidata *nd){(void)nd;}
 '''
 post=r'''

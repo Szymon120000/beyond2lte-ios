@@ -46,7 +46,7 @@ static int b2l_apps_remove(const char *path,vfs_context_t ctx)
     if(!nd.ni_vp)error=ENOENT;
     else if(root_type(nd.ni_vp,VDIR))error=EPERM;
     else {
-        error=VNOP_REMOVE(nd.ni_dvp,nd.ni_vp,&nd.ni_cnd,ctx);
+        error=VNOP_REMOVE(nd.ni_dvp,nd.ni_vp,&nd.ni_cnd,0,ctx);
         if(!error)error=VNOP_FSYNC(nd.ni_dvp,MNT_WAIT,ctx);
     }
     lookup_done(&nd);return error;

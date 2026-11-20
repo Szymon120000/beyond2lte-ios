@@ -160,7 +160,7 @@ b2l_compat_validate_pc(uint64_t address, void *opaque)
     static unsigned check_samples;
     bool trace = check_samples < 2;
     if (trace) { ++check_samples; b2l_early_trace("B2L COMPAT: execute-map check begin pc=0x%llx\n", address); }
-    if ((address & 3u) || !b2l_user_range(address, sizeof(instruction))) return -1;
+    if ((address & 3u) || !b2l_user_range(address, sizeof(uint32_t))) return -1;
     /* Inspect only the exact instruction range under shared entry locks.
      * Constant/transparent submaps must resolve to the executable leaf, with
      * bounds translated/clamped back into the caller's parent address space.
@@ -171,7 +171,7 @@ b2l_compat_validate_pc(uint64_t address, void *opaque)
     uint64_t began=measurement && measurement->sample ? mach_absolute_time() : 0;
     VM_MAP_LOCK_CTX_DECLARE(ctx);
     vm_map_t map=current_map();
-    kern_return_t kr=vm_map_range_sh_lock(ctx,&map,address,address+sizeof(instruction),
+    kern_return_t kr=vm_map_range_sh_lock(ctx,&map,address,address+sizeof(uint32_t),
         VMRL_SH_STREAM_NO_HOLES | VMRL_SH_DESCEND_INTO_CONSTANT);
     bool executable=false;
     if (kr==KERN_SUCCESS) {
@@ -180,7 +180,7 @@ b2l_compat_validate_pc(uint64_t address, void *opaque)
             (entry->protection & VM_PROT_EXECUTE)) {
             vm_map_address_t start=0,end=0;
             vm_map_lock_ctx_bounds_in_parent(ctx,&start,&end,NULL);
-            executable=start<=address && end>=address+sizeof(instruction);
+            executable=start<=address && end>=address+sizeof(uint32_t);
         }
         vm_map_range_sh_unlock(ctx,&map);
     }
