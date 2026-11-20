@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: MIT */
 #include "../../common/apfs/b2l_apfs_checkpoint.h"
 #include "../../common/apfs/b2l_apfs_omap.h"
+#include "../../common/apfs/b2l_apfs_volume.h"
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #define BS 4096u
-#define BLOCKS 8u
+#define BLOCKS 12u
 static uint8_t disk[BS*BLOCKS];
 static uint32_t r32(const uint8_t*p){return(uint32_t)p[0]|((uint32_t)p[1]<<8)|((uint32_t)p[2]<<16)|((uint32_t)p[3]<<24);}
 static void w16(uint8_t*p,uint16_t v){p[0]=(uint8_t)v;p[1]=(uint8_t)(v>>8);}
@@ -71,5 +72,30 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
   assert(b2l_apfs_omap_lookup(rd,NULL,sizeof(disk),BS,BLOCKS,7,9,10,
       scratch,sizeof(scratch),&k,&v)==B2L_APFS_OMAP_OK);
   assert(k.oid==9&&k.xid==3&&v.paddr==5);
+ }
+
+ /* Volume OMAP: resolve the virtual FSTREE root at the volume XID. */
+ {uint8_t *o=disk+8*BS,*tree=disk+9*BS;
+  struct b2l_apfs_volume_info vol; uint8_t omap_scratch[BS],tree_scratch[BS];
+  memset(o,0,BS);w64(o+8,8);w64(o+16,12);w32(o+24,0x4000000b);
+  w32(o+40,0x40000002);w64(o+48,9);seal(o);
+  memset(tree,0,BS);w64(tree+8,9);w64(tree+16,12);w32(tree+24,0x40000002);
+  w32(tree+32,7);w32(tree+36,1);w16(tree+40,0);w16(tree+42,4);
+  w16(tree+56,0);w16(tree+58,16);w64(tree+60,66);w64(tree+68,3);
+  w32(tree+4040,0);w32(tree+4044,BS);w64(tree+4048,10);seal(tree);
+  memset(&vol,0,sizeof(vol));vol.xid=12;vol.omap_oid=8;vol.root_tree_oid=66;
+  assert(b2l_apfs_resolve_volume_root(rd,NULL,sizeof(disk),BS,BLOCKS,&vol,
+      vol.omap_oid,omap_scratch,sizeof(omap_scratch),tree_scratch,
+      sizeof(tree_scratch),&k,&v)==B2L_APFS_OMAP_OK);
+  assert(k.oid==66&&k.xid==3&&v.paddr==10);
+  /* Snapshot APSB has no own OMAP: borrow the live OMAP but use snapshot XID. */
+  vol.omap_oid=0;vol.xid=2;
+  assert(b2l_apfs_resolve_volume_root(rd,NULL,sizeof(disk),BS,BLOCKS,&vol,
+      8,omap_scratch,sizeof(omap_scratch),tree_scratch,
+      sizeof(tree_scratch),&k,&v)==B2L_APFS_OMAP_EBOUNDS);
+  vol.xid=12;
+  assert(b2l_apfs_resolve_volume_root(rd,NULL,sizeof(disk),BS,BLOCKS,&vol,
+      8,omap_scratch,sizeof(omap_scratch),tree_scratch,
+      sizeof(tree_scratch),&k,&v)==B2L_APFS_OMAP_OK);
  }
  puts("APFS checkpoint and OMAP decoder tests passed");return 0;}
