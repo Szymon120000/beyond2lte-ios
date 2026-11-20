@@ -77,7 +77,7 @@ int b2l_apfs_omap_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
   nkeys=r32(p+36);
   if(!(flags&OMAP_BTN_FIXED)||(flags&0x8000u)) return B2L_APFS_OMAP_ETYPE;
   leaf=(flags&OMAP_BTN_LEAF)!=0;
-  if(((flags&OMAP_BTN_ROOT)!=0)!=(objtype==2u)) return B2L_APFS_OMAP_ETYPE;
+  if(((flags&OMAP_BTN_ROOT)!=0)!=(objtype==2u) || (r32(p+24)&0xc0000000u)!=0x40000000u) return B2L_APFS_OMAP_ETYPE;
   table_off=(uint32_t)p[40]|((uint32_t)p[41]<<8);
   table_len=(uint32_t)p[42]|((uint32_t)p[43]<<8);
   if(table_off==0xffffu||table_len==0xffffu||table_off>bs-56u||
@@ -95,11 +95,11 @@ int b2l_apfs_omap_lookup(b2l_apfs_read_fn fn,void *ctx,uint64_t devsz,
    uint32_t toc=56u+table_off+i*4u;
    uint16_t keyoff=(uint16_t)(p[toc]|((uint16_t)p[toc+1]<<8));
    uint16_t valoff=(uint16_t)(p[toc+2]|((uint16_t)p[toc+3]<<8));
-   if(keyoff!=(uint16_t)(i*16u)||valoff!=(uint16_t)((i+1u)*val_size))
-     return B2L_APFS_OMAP_EBOUNDS;
    ko=(uint64_t)key_start+keyoff;
+   if(valoff==0||valoff>values_end-key_start) return B2L_APFS_OMAP_EBOUNDS;
    vo=(uint64_t)values_end-valoff;
-   if(ko+16u>values_end||vo+val_size>values_end||vo<key_start)
+   if(ko+16u>values_end||vo+val_size>values_end||vo<key_start||
+      !(ko+16u<=vo || vo+val_size<=ko))
      return B2L_APFS_OMAP_EBOUNDS;
    if(b2l_apfs_decode_omap_key(p+ko,16,&k)!=B2L_APFS_OMAP_OK)
      return B2L_APFS_OMAP_EBOUNDS;
