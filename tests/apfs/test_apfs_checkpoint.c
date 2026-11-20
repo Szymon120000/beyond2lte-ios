@@ -43,4 +43,16 @@ int main(void){uint8_t nx[BS],scratch[BS];struct b2l_apfs_checkpoint_info ci;str
       scratch,sizeof(scratch),&k,&v)==B2L_APFS_OMAP_OK);
   assert(k.oid==9&&k.xid==3&&v.paddr==5&&v.size==BS);
  }
+ /* Internal root branch descends to a non-root leaf node. */
+ {uint8_t *root=disk+7*BS,*leaf=disk+5*BS;
+  memset(root,0,BS);w64(root+8,7);w64(root+16,7);w32(root+24,0x40000002);
+  w32(root+32,5);w32(root+36,1);w16(root+56,0);w16(root+58,8);
+  w64(root+60,9);w64(root+4048,5);seal(root);
+  memset(leaf,0,BS);w64(leaf+8,5);w64(leaf+16,7);w32(leaf+24,0x40000003);
+  w32(leaf+32,6);w32(leaf+36,1);w16(leaf+56,0);w16(leaf+58,16);
+  w64(leaf+60,9);w64(leaf+68,3);w32(leaf+4080,0);w32(leaf+4084,BS);w64(leaf+4088,5);seal(leaf);
+  assert(b2l_apfs_omap_lookup(rd,NULL,sizeof(disk),BS,BLOCKS,7,9,10,
+      scratch,sizeof(scratch),&k,&v)==B2L_APFS_OMAP_OK);
+  assert(k.oid==9&&k.xid==3&&v.paddr==5);
+ }
  puts("APFS checkpoint and OMAP decoder tests passed");return 0;}
