@@ -14,6 +14,7 @@ import stat
 import zipfile
 
 UPDATER_PATH = "META-INF/com/google/android/update-binary"
+UPDATER_SOURCE = Path(__file__).with_name("twrp-userdata-update-binary")
 MANIFEST_PATH = "META-INF/com/google/android/userdata-manifest.tsv"
 
 
@@ -73,7 +74,7 @@ def main():
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(args.output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as archive:
-        archive.writestr(UPDATER_PATH, UPDATER, compress_type=zipfile.ZIP_STORED)
+        archive.write(UPDATER_SOURCE, UPDATER_PATH, compress_type=zipfile.ZIP_STORED)
         lines = []
         for rel, item in sorted(changed):
             _, sha, mode, source = item
