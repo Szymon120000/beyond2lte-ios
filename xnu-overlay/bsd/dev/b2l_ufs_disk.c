@@ -21,6 +21,7 @@
 #include "b2l_ufs_transport.h"
 #include "b2l_ufs_aux.h"
 #include <arm64/b2l_persistent_log.h>
+#include <kern/clock.h>
 #include "../kern/b2l_native_cache.h"
 #include "../kern/b2l_cache_core.h"
 #include "../kern/b2l_options.h"
@@ -435,17 +436,22 @@ b2l_options_load(const void *block, size_t bytes)
 		if (eq != NULL && eq > cursor && (size_t)(eq - cursor) < B2L_OPTION_KEY_BYTES &&
 		    *cursor != '#') {
 			const char *v = eq + 1;
-			int sign = 1, value = 0, digits = 0;
+			int sign = 1, digits = 0, overflow = 0;
+			long long value = 0;
 			if (v < stop && *v == '-') { sign = -1; v++; }
-			while (v < stop && *v >= '0' && *v <= '9' && digits < 9) {
-				value = value * 10 + (*v++ - '0');
+			while (v < stop && *v >= '0' && *v <= '9') {
+				if (value > 214748364LL) overflow = 1;
+				else value = value * 10 + (*v - '0');
+				v++;
 				digits++;
 			}
-			if (digits && v == stop) {
+			if (sign > 0 && value > 2147483647LL) overflow = 1;
+			if (sign < 0 && value > 2147483648LL) overflow = 1;
+			if (digits && !overflow && v == stop) {
 				struct b2l_option_entry *entry = &b2l_options[b2l_option_count++];
 				memset(entry->key, 0, sizeof(entry->key));
 				memcpy(entry->key, cursor, (size_t)(eq - cursor));
-				entry->value = sign * value;
+				entry->value = (int)(sign * value);
 			}
 		}
 		if (newline == NULL) break;
@@ -494,6 +500,15 @@ static void b2l_start_options(void)
      b2l_option_int("hfs_compat","b2l_hfs_compat",1),
      b2l_option_int("system_log","b2l_system_log",1),
      b2l_option_int("diag","b2l_diag",0));
+ /* The platform expert seeds the calendar from the RTC. If that failed, the
+  * block can carry the flash-time seconds so iOS still shows a sane date. */
+ int seed=b2l_option_int("unix_time",NULL,0);
+ clock_sec_t secs=0;clock_usec_t usecs=0;
+ clock_get_calendar_microtime(&secs,&usecs);
+ if(seed>1577836800&&secs<1577836800){
+  clock_set_calendar_microtime((clock_sec_t)seed,0);
+  printf("B2L TIME: RTC clock was unset; applied block seed %d\n",seed);
+ }
 }
 
 /* The console is a debugging aid, not a payload: an unformatted or

@@ -66,6 +66,7 @@ int main(void)
 	assert(b2l_option_int("diag", "b2l_diag", 0) == 1);
 	assert(b2l_option_int("hfs_compat", "b2l_hfs_compat", 1) == 1);
 	assert(b2l_option_int("native_cache_restore", "b2l_cache_restore", 0) == 5);
+	assert(b2l_option_int("unix_time", "b2l_unix_time", 0) == 1795244400);
 	assert(b2l_option_int("bogus", "b2l_bogus", 3) == 3);
 	load(bad_sum);
 	assert(b2l_option_int("native_cache", "b2l_native_cache", 9) == 9);
@@ -77,6 +78,7 @@ int main(void)
 	assert(b2l_option_int("native_cache", "b2l_native_cache", 4) == 4);
 	assert(b2l_option_int("graphics_compat", "b2l_graphics_compat", 1) == -1);
 	assert(b2l_option_int("system_log", "b2l_system_log", 0) == 0);
+	assert(b2l_option_int("unix_time", "b2l_unix_time", 7) == 7);
 	/* File values win over boot arguments, including an explicit 0. */
 	boot_value = 1; boot_present = 1;
 	load(valid);
@@ -96,13 +98,15 @@ int main(void)
 }
 '''
 
-text = ('native_cache=0\n'
+text = ('unix_time=1795244400\n'
+        'native_cache=0\n'
         'graphics_compat=0\n'
         'system_log=1\n'
         'diag=1\n'
         'native_cache_restore=5\n'
         'hfs_compat=1\n')
-malformed_text = ('native_cache = 0\n'
+malformed_text = ('unix_time=9999999999\n'
+                  'native_cache = 0\n'
                   'graphics_compat=-1\n'
                   'system_log=1x\n'
                   '# diag=1\n'
