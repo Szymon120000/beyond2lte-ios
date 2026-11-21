@@ -15,7 +15,7 @@
 #include <mach/mach_time.h>
 #include <pexpert/pexpert.h>
 #include <arm64/b2l_diag.h>
-#include "../dev/b2l_options.h"
+#include "b2l_options.h"
 #include <arm64/b2l_persistent_log.h>
 #endif
 
