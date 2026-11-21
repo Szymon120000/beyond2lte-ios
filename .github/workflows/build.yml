@@ -31,7 +31,7 @@ env:
   LIBDISPATCH_COMMIT: 701f4d1a24ae9c6863901bbbb22624b7d1b87321
   MU_SILICIUM_COMMIT: 2147dec93fc293ec85b1814a828816130d6f93b7
   MU_BASECORE_COMMIT: 762a65dad79e2934cddbefa467b7e2c7b5ee4bc0
-  BEYOND2LTE_UEFI_COMMIT: 48add5bb03ab6f7ee4eb5aa04a30366e6dde6ba3
+  BEYOND2LTE_UEFI_COMMIT: 5ef5c7ad6c5992d462af0a0cec793df604e2a619
 
 jobs:
   build:
@@ -354,7 +354,7 @@ jobs:
       - name: Fetch and prepare Mu-Silicium + beyond2lte platform overlay
         env:
           MU_SILICIUM_URL: ${{ secrets.MU_SILICIUM_URL || 'https://github.com/Project-Silicium/Mu-Silicium.git' }}
-          BEYOND2LTE_UEFI_URL: ${{ secrets.BEYOND2LTE_UEFI_URL || 'https://github.com/orhunnx/beyond2lte-uefi.git' }}
+          BEYOND2LTE_UEFI_URL: ${{ secrets.BEYOND2LTE_UEFI_URL || 'https://github.com/Szymon120000/beyond2lte-uefi.git' }}
         run: |
           git clone "$MU_SILICIUM_URL" "$MU_WORK_TREE"
           git -C "$MU_WORK_TREE" checkout --detach "$MU_SILICIUM_COMMIT"
@@ -492,6 +492,17 @@ jobs:
 
           python3 scripts/package-boot.py --verify out/ci-boot/boot.img
 
+          # Standalone USB host probe.  It is not part of the FD; this copies
+          # it next to boot.img so it can be pushed to the ESP separately.
+          HOST_EFI=$(find "$MU_WORK_TREE/Build" -name 'B2LUsbHost.efi' -type f | head -n 1)
+          if [[ -n "$HOST_EFI" ]]; then
+            cp "$HOST_EFI" out/ci-boot/B2LUsbHost.efi
+            ls -l out/ci-boot/B2LUsbHost.efi
+          else
+            echo 'B2LUsbHost.efi was not built' >&2
+            exit 1
+          fi
+
           python3 scripts/package-twrp-zip.py out/ci-boot/boot.img out/ci-boot/beyond2lte-boot-flashable.zip
 
       - name: Upload boot.img and tar as fast artifact
@@ -500,6 +511,7 @@ jobs:
           name: beyond2lte-boot-img
           path: |
             out/ci-boot/boot.img
+            out/ci-boot/B2LUsbHost.efi
             out/ci-boot/manifest.json
             out/ci-boot/beyond2lte-xnu-boot.tar
             out/ci-boot/beyond2lte-boot-flashable.zip
