@@ -261,6 +261,45 @@ b2l_surface_create_physical(uint64_t phys, uint32_t width, uint32_t height,
 	return s;
 }
 
+B2LSurface *
+b2l_surface_create_buffer(uint32_t width, uint32_t height,
+    uint32_t bytesPerRow, uint32_t pixelFormat)
+{
+	B2LSurface *s = b2l_surface_alloc();
+	IOBufferMemoryDescriptor *mem = NULL;
+	if (s == NULL) {
+		return NULL;
+	}
+	s->width = width;
+	s->height = height;
+	s->bytesPerRow = bytesPerRow;
+	s->bytesPerElement = 4;
+	s->elementWidth = s->elementHeight = 1;
+	s->pixelFormat = pixelFormat;
+	s->allocSize = (uint32_t)round_page((uint64_t)bytesPerRow * height);
+	s->mapCache = kIOMapWriteCombineCache;
+	if ((uint64_t)OSAddAtomic64(s->allocSize, (volatile SInt64 *)&b2l_surface_wired) +
+	    s->allocSize > B2L_SURFACE_WIRED_MAX) {
+		OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&b2l_surface_wired);
+		s->release();
+		return NULL;
+	}
+	mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
+	    kIODirectionInOut | kIOMemoryKernelUserShared, s->allocSize, page_size);
+	if (mem == NULL) {
+		OSAddAtomic64(-(SInt64)s->allocSize, (volatile SInt64 *)&b2l_surface_wired);
+		s->release();
+		return NULL;
+	}
+	bzero(mem->getBytesNoCopy(), s->allocSize);
+	s->memory = mem;
+	if (!b2l_surface_publish(s)) {
+		s->release();
+		return NULL;
+	}
+	return s;
+}
+
 mach_port_name_t
 b2l_surface_port_in_task(B2LSurface *s, task_t task)
 {

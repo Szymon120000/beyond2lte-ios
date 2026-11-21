@@ -33,4 +33,64 @@ static inline int b2l_blit(void *dst,uint64_t dbytes,uint32_t dw,uint32_t dh,uin
                 (const uint8_t*)src+soff+((uint64_t)sy+y)*ss+(uint64_t)sx*4,(size_t)w*4);
     return 1;
 }
+
+/* Nearest-neighbour upscales used by the CPU scanout bridge. The destination
+ * rectangle is expressed in render coordinates and is mapped into the panel;
+ * each panel pixel reads one source pixel. num/den is the panel/render ratio
+ * (4/3 for 1080->1440, 2/1 for 720->1440). */
+static inline int b2l_blit_scale_common(void *dst,uint64_t dbytes,uint32_t dw,uint32_t dh,uint32_t ds,
+    const void *src,uint64_t sbytes,uint32_t sw,uint32_t sh,uint32_t ss,uint32_t soff,
+    int32_t sx,int32_t sy,int32_t dx,int32_t dy,int32_t width,int32_t height,
+    uint32_t num,uint32_t den)
+{
+    if(!dst||!src||!dw||!dh||!sw||!sh||dw>16384||dh>16384||sw>16384||sh>16384||
+       ds<dw*4||ss<sw*4||ds>65536||ss>65536||num<den||den==0||
+       sx<0||sy<0||dx<0||dy<0||width<=0||height<=0||
+       (uint32_t)sx>=sw||(uint32_t)sy>=sh||(uint32_t)dx>=dw||(uint32_t)dy>=dh)return 0;
+    uint64_t end_s=(uint64_t)soff+((uint64_t)sy+height-1)*ss+((uint64_t)sx+width)*4;
+    if(end_s>sbytes)return 0;
+    uint64_t pdx=(uint64_t)dx*num/den, pdy=(uint64_t)dy*num/den;
+    uint64_t px2=((uint64_t)dx+(uint64_t)width)*num/den;
+    uint64_t py2=((uint64_t)dy+(uint64_t)height)*num/den;
+    if(px2>dw)px2=dw;
+    if(py2>dh)py2=dh;
+    if(pdx>=px2||pdy>=py2)return 0;
+    if((uint64_t)pdy*ds+px2*4>dbytes)return 0;
+    uint32_t sxend=(uint32_t)sx+(uint32_t)width;
+    uint32_t syend=(uint32_t)sy+(uint32_t)height;
+    if(sxend>sw)sxend=sw;
+    if(syend>sh)syend=sh;
+    uint32_t npx=(uint32_t)(px2-pdx);
+    uint32_t sxi=(uint32_t)sx, syi=(uint32_t)sy;
+    uint32_t accy=0;
+    for(uint64_t py=pdy;py<py2;++py){
+        if(syi>=syend)break;
+        const uint32_t *srow=(const uint32_t *)((const uint8_t*)src+soff+(uint64_t)syi*ss);
+        uint32_t *drow=(uint32_t*)((uint8_t*)dst+py*ds)+pdx;
+        uint32_t sxx=sxi, accx=0;
+        for(uint32_t i=0;i<npx;++i){
+            if(sxx>=sxend)break;
+            drow[i]=srow[sxx];
+            accx+=den;
+            if(accx>=num){accx-=num;++sxx;}
+        }
+        accy+=den;
+        if(accy>=num){accy-=num;++syi;}
+    }
+    return 1;
+}
+static inline int b2l_blit_43(void *dst,uint64_t dbytes,uint32_t dw,uint32_t dh,uint32_t ds,
+    const void *src,uint64_t sbytes,uint32_t sw,uint32_t sh,uint32_t ss,uint32_t soff,
+    int32_t sx,int32_t sy,int32_t dx,int32_t dy,int32_t width,int32_t height)
+{
+    return b2l_blit_scale_common(dst,dbytes,dw,dh,ds,src,sbytes,sw,sh,ss,soff,
+        sx,sy,dx,dy,width,height,4,3);
+}
+static inline int b2l_blit_21(void *dst,uint64_t dbytes,uint32_t dw,uint32_t dh,uint32_t ds,
+    const void *src,uint64_t sbytes,uint32_t sw,uint32_t sh,uint32_t ss,uint32_t soff,
+    int32_t sx,int32_t sy,int32_t dx,int32_t dy,int32_t width,int32_t height)
+{
+    return b2l_blit_scale_common(dst,dbytes,dw,dh,ds,src,sbytes,sw,sh,ss,soff,
+        sx,sy,dx,dy,width,height,2,1);
+}
 #endif

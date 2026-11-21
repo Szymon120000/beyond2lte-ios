@@ -33,10 +33,13 @@ static void IOLockUnlock(void*){assert(locks);--locks;}
 static void b2l_early_gui_present(){++shown;}
 static void IOLog(const char*,...){}
 static void b2l_diag_record(const char*,...){}
+static int proc_selfpid(){return 0;}
 class AppleCLCD {
  public:
  uintptr_t fPixels;uint32_t fWidth=4,fHeight=3,fRowBytes=20;
- B2LSurface *fSurface=nullptr;void *fLock=nullptr;bool fConsolePaused=false;
+ uint32_t fPanelWidth=4,fPanelHeight=3,fPanelRowBytes=20;
+ B2LSurface *fSurface=nullptr; B2LSurface *fPanelSurface=nullptr;
+ void *fLock=nullptr;bool fConsolePaused=false;
  void swap(const uint8_t*);
 };
 ''' + get.replace('__asm__ volatile("dsb sy":::"memory");','/* host: no ARM barrier */') + r'''

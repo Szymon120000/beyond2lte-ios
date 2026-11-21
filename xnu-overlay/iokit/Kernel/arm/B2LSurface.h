@@ -62,6 +62,11 @@ B2LSurface *b2l_surface_copy(uint32_t id);
 B2LSurface *b2l_surface_create_physical(uint64_t phys, uint32_t width,
     uint32_t height, uint32_t bytesPerRow, uint32_t pixelFormat);
 
+/* Publish a kernel-owned BGRA buffer as a surface. Used as the compositor's
+ * default surface when the render size differs from the panel scanout. */
+B2LSurface *b2l_surface_create_buffer(uint32_t width, uint32_t height,
+    uint32_t bytesPerRow, uint32_t pixelFormat);
+
 /* Send right for the surface in task (IOSurfaceLookupFromMachPort). */
 mach_port_name_t b2l_surface_port_in_task(B2LSurface *surface, task_t task);
 

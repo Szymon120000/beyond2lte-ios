@@ -75,10 +75,12 @@ class AppleCLCD : public IOMobileFramebuffer {
 
 public:
 	uint64_t      fPhys;
-	uint32_t      fWidth, fHeight, fRowBytes;
+	uint32_t      fWidth, fHeight, fRowBytes;   /* compositor render geometry */
+	uint32_t      fPanelWidth, fPanelHeight, fPanelRowBytes;
 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
 	IOMemoryMap  *fMap;
-	B2LSurface *fSurface;         /* the panel memory as an IOSurface */
+	B2LSurface *fSurface;         /* default render surface for the compositor */
+	B2LSurface *fPanelSurface;    /* physical panel memory as an IOSurface */
 	IOLock       *fLock;            /* swaps and client list */
 	OSArray      *fClients;
 	uint32_t      fSwapID;
@@ -126,21 +128,32 @@ AppleCLCD::start(IOService *provider)
 	PE_current_console(&video);
 	uint64_t mapped_bytes=0;
     if(!b2l_early_range(&fPhys,&mapped_bytes))return false;
-	fWidth = (uint32_t)video.v_width;
-	fHeight = (uint32_t)video.v_height;
-	fRowBytes = (uint32_t)video.v_rowBytes;
-	if (fPhys == 0 || fWidth == 0 || fHeight == 0 || fWidth>8192 || fHeight>8192 || fRowBytes < fWidth * 4 || (uint64_t)fRowBytes*fHeight>mapped_bytes) {
+	fPanelWidth = (uint32_t)video.v_width;
+	fPanelHeight = (uint32_t)video.v_height;
+	fPanelRowBytes = (uint32_t)video.v_rowBytes;
+	if (fPhys == 0 || fPanelWidth == 0 || fPanelHeight == 0 ||
+	    fPanelWidth>8192 || fPanelHeight>8192 || fPanelRowBytes < fPanelWidth * 4 ||
+	    (uint64_t)fPanelRowBytes*fPanelHeight>mapped_bytes) {
 		IOLog("B2L FB: no boot framebuffer\n");
 		return false;
 	}
+	/* The compositor renders at 3/4 linear resolution (1080x2280 on the S10+
+	 * panel) and the CPU bridge upscales to the fixed DECON scanout. This cuts
+	 * the software-rasterised pixel count by 56% without touching DECON. */
+	fWidth = (fPanelWidth / 4) * 3;
+	fHeight = (fPanelHeight / 4) * 3;
+	fRowBytes = (fWidth * 4 + 63) & ~63U;   /* IOSurface row alignment */
 	fLock = IOLockAlloc();
 	fClients = OSArray::withCapacity(4);
-	fSurface = b2l_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, B2L_FB_FORMAT_BGRA);
-	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
+	fPanelSurface = b2l_surface_create_physical(fPhys, fPanelWidth, fPanelHeight,
+	    fPanelRowBytes, B2L_FB_FORMAT_BGRA);
+	fSurface = b2l_surface_create_buffer(fWidth, fHeight, fRowBytes, B2L_FB_FORMAT_BGRA);
+	fPixels = fPanelSurface != NULL ? fPanelSurface->kernelAddress() : 0;
 	fWorkLoop = IOWorkLoop::workLoop();
-	if (fLock == NULL || fClients == NULL || fPixels == 0 || fWorkLoop == NULL) {
+	if (fLock == NULL || fClients == NULL || fSurface == NULL || fPixels == 0 || fWorkLoop == NULL) {
 		IOLog("B2L FB: setup failed\n");
 		OSSafeReleaseNULL(fSurface);    /* stays published: also held by the table */
+		OSSafeReleaseNULL(fPanelSurface);
 		OSSafeReleaseNULL(fWorkLoop);
 		return false;
 	}
@@ -155,8 +168,9 @@ AppleCLCD::start(IOService *provider)
 	setProperty("external", false);
 	setProperty("DisplayPipePlaneBaseAlignment", 64ULL, 32);
 	registerService();
-	IOLog("B2L FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u\n",
-	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id);
+	IOLog("B2L FB: AppleCLCD render %ux%u stride %u panel %ux%u stride %u at 0x%llx, default surface %u\n",
+	    fWidth, fHeight, fRowBytes, fPanelWidth, fPanelHeight, fPanelRowBytes,
+	    fPhys, fSurface->id);
 	return true;
 }
 
@@ -328,7 +342,7 @@ AppleCLCD::swap(const uint8_t *rec)
 			__atomic_fetch_add(&b2l_fb_missing, 1, __ATOMIC_RELAXED);
 			continue;
 		}
-		if (s == fSurface) {
+		if (s == fPanelSurface) {
 			OSSafeReleaseNULL(s);
 			continue;
 		}
@@ -339,11 +353,27 @@ AppleCLCD::swap(const uint8_t *rec)
             s->pixelFormat==B2L_FB_FORMAT_BGRA) {
             if(w<=0||h<=0){w=(int32_t)s->width;h=(int32_t)s->height;}
             IOLockLock(fLock);
-            int shown=b2l_blit((void*)fPixels,(uint64_t)fRowBytes*fHeight,fWidth,fHeight,fRowBytes,
-                (const void*)src,s->memory->getLength(),s->width,s->height,s->bytesPerRow,s->offset,
-                sx,sy,dx,dy,w,h);
+            int shown;
+            if (fPanelWidth == fWidth && fPanelHeight == fHeight) {
+                shown=b2l_blit((void*)fPixels,(uint64_t)fPanelRowBytes*fPanelHeight,
+                    fPanelWidth,fPanelHeight,fPanelRowBytes,
+                    (const void*)src,s->memory->getLength(),s->width,s->height,s->bytesPerRow,s->offset,
+                    sx,sy,dx,dy,w,h);
+            } else if (fPanelWidth == fWidth * 4 / 3 && fPanelHeight == fHeight * 4 / 3) {
+                shown=b2l_blit_43((void*)fPixels,(uint64_t)fPanelRowBytes*fPanelHeight,
+                    fPanelWidth,fPanelHeight,fPanelRowBytes,
+                    (const void*)src,s->memory->getLength(),s->width,s->height,s->bytesPerRow,s->offset,
+                    sx,sy,dx,dy,w,h);
+            } else if (fPanelWidth == fWidth * 2 && fPanelHeight == fHeight * 2) {
+                shown=b2l_blit_21((void*)fPixels,(uint64_t)fPanelRowBytes*fPanelHeight,
+                    fPanelWidth,fPanelHeight,fPanelRowBytes,
+                    (const void*)src,s->memory->getLength(),s->width,s->height,s->bytesPerRow,s->offset,
+                    sx,sy,dx,dy,w,h);
+            } else {
+                shown=0;
+            }
             if(shown&&!fConsolePaused){b2l_early_gui_present();fConsolePaused=true;IOLog("B2L FB: first IOSurface frame copied to physical scanout\n");}
-            if(shown&&b2l_fb_swaps_logged<=16)b2l_fb_sample((const uint32_t *)fPixels,fRowBytes/4,fWidth,fHeight,swap_id);
+            if(shown&&b2l_fb_swaps_logged<=16)b2l_fb_sample((const uint32_t *)fPixels,fPanelRowBytes/4,fPanelWidth,fPanelHeight,swap_id);
             __asm__ volatile("dsb sy":::"memory");
             IOLockUnlock(fLock);
             if (shown) {
