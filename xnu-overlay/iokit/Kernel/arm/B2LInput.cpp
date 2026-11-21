@@ -26,6 +26,9 @@ class B2LInput : public IOService {
     IOTimerEventSource *timer;
     volatile uint8_t *gpio,*i2c;
     bool stable[4],candidate[4],touch,touchEnabled;
+    bool touchSniff,touchLog;
+    unsigned rawSeen,rawLogged,pressSeen,moveSeen,releaseSeen,ignoredSeen;
+    unsigned pressureMin,pressureMax;
     unsigned debounce[4],failures,keyLogs,transferLogs,timeoutUS;
     unsigned initAttempts;
     bool initPending;
@@ -39,6 +42,7 @@ class B2LInput : public IOService {
     B2L_SEC_TS_POINTER pointer;
     static void poll(OSObject*,IOTimerEventSource*);
     void initializeTouch();
+    void handleEvent(const uint8_t *event);
     uint32_t r(unsigned off){uint32_t v=*(volatile uint32_t*)(i2c+off);__asm__ volatile("dmb oshld":::"memory");return v;}
     void w(unsigned off,uint32_t v){*(volatile uint32_t*)(i2c+off)=v;__asm__ volatile("dsb oshst":::"memory");}
     void quiesce(){w(0x20,0);w(0x24,r(0x24));w(0x44,r(0x44)&~(1u<<31));w(0,r(0)&~0xc0u);}
@@ -133,6 +137,38 @@ void B2LInput::initializeTouch(){
             stage,touch,boot,integrity,device[0],device[1],device[2],device[3],device[4],initAttempts,initPending);
         quiesce();
 }
+void B2LInput::handleEvent(const uint8_t *event){
+    ++rawSeen;++eventCount;
+    B2L_SEC_TS_PARSE_RESULT result=B2LSecTsParseEvent(event,&pointer);
+    unsigned action=(event[0]>>6)&3;
+    unsigned id=(event[0]>>2)&0x0f;
+    unsigned pressure=event[6]&0x3f;
+    unsigned type=(unsigned)(((event[6]>>6)<<2)|(event[7]>>6));
+    unsigned remaining=B2LSecTsRemainingEvents(event);
+    if(result==B2LSecTsUpdated){
+        ++updateCount;
+        /* Sniff mode characterizes the controller without letting a ghost
+         * contact reach backboardd. */
+        if(!touchSniff)b2l_hid_touch(0,pointer.Active,pointer.X,pointer.Y);
+    }
+    if((event[0]&3)==0){
+        if(action==1){++pressSeen;if(pressure<pressureMin)pressureMin=pressure;if(pressure>pressureMax)pressureMax=pressure;}
+        else if(action==2)++moveSeen;
+        else if(action==3)++releaseSeen;
+        else ++ignoredSeen;
+    }else ++ignoredSeen;
+    /* Bound the raw dump: the damaged controller can fill the FIFO far
+     * faster than the console can drain it. First 200 records plus every
+     * 20th up to 400 leaves enough for a real gesture to be recognized. */
+    bool logIt=touchLog&&(rawLogged<200||(rawSeen%20==0&&rawLogged<400));
+    if(logIt){
+        ++rawLogged;
+        b2l_diag_record("B2L TOUCH RAW: t=%llu n=%u b=%02x%02x%02x%02x%02x%02x%02x%02x x=%u y=%u p=%u act=%u id=%u type=%u rem=%u res=%u\n",
+            uptimeUS()/1000,rawSeen,event[0],event[1],event[2],event[3],event[4],
+            event[5],event[6],event[7],pointer.X,pointer.Y,pressure,action,id,
+            type,remaining,(unsigned)result);
+    }
+}
 bool B2LInput::start(IOService *provider){
     if(!IOService::start(provider))return false;
     gpioDesc=IOMemoryDescriptor::withPhysicalAddress(0x15850000,4096,kIODirectionInOut);
@@ -143,13 +179,17 @@ bool B2LInput::start(IOService *provider){
     for(unsigned k=0;k<4;++k){unsigned off=k?4:0x44;bool down=!( *(volatile uint32_t*)(gpio+off)&masks[k]);stable[k]=candidate[k]=down;}
     /* The digitizer on this unit is damaged and emits contacts with no finger
      * present. Option "touch=0" keeps the power/volume/home keys but never
-     * talks to the touch controller, so ghost contacts cannot reach
-     * backboardd. It defaults to 1 so an absent option changes nothing. */
-    touchEnabled=b2l_option_int("touch","b2l_touch",1)!=0;
-    if(!touchEnabled){
-        touch=false;
-        b2l_diag_record("B2L INPUT: touch disabled by option; GPIO keys only\n");
-    }else{
+     * delivers touch events. "touch_sniff=1" still initializes the controller
+     * and logs the raw records but never calls b2l_hid_touch, so ghost and
+     * real contacts can be characterized without moving the UI. */
+    int optTouch=b2l_option_int("touch","b2l_touch",1);
+    touchSniff=b2l_option_int("touch_sniff","b2l_touch_sniff",0)!=0;
+    touchLog=b2l_option_int("touch_log","b2l_touch_log",0)!=0;
+    touchEnabled=(optTouch!=0)||touchSniff;
+    rawSeen=rawLogged=pressSeen=moveSeen=releaseSeen=ignoredSeen=0;
+    pressureMin=0xff;pressureMax=0;
+    /* Map the controller even when touch is off: a late option block can turn
+     * sniff mode on from the runtime check below. */
     i2cDesc=IOMemoryDescriptor::withPhysicalAddress(0x104b0000,4096,kIODirectionInOut);
     if(i2cDesc)i2cMap=i2cDesc->map(kIOMapInhibitCache);
     if(i2cMap){
@@ -164,17 +204,22 @@ bool B2LInput::start(IOService *provider){
             handoff[0],handoff[1],handoff[2],handoff[3],handoff[4],handoff[5],handoff[6],handoff[7],handoff[8],handoff[9],handoff[14],handoff[20],handoff[21]);
         b2l_diag_record("B2L TOUCH HANDOFF: fs1=0x%x fs2=0x%x fs3=0x%x sla=0x%x ctrl=0x%x int=0x%llx err=0x%llx trans=0x%llx fifo=0x%llx\n",
             r(0x60),r(0x64),r(0x68),r(0x6c),r(0),handoff[16],handoff[17],handoff[18],handoff[19]);
-        /* A preempted early probe must not disable touch for the entire
-         * boot. Retry on this driver's workloop, at most four attempts total. */
-        initializeTouch();
-    }
+        if(touchEnabled){
+            /* A preempted early probe must not disable touch for the entire
+             * boot. Retry on this driver's workloop, at most four attempts. */
+            initializeTouch();
+        }
+    }else touchEnabled=false;
+    if(!touchEnabled){
+        touch=false;
+        b2l_diag_record("B2L INPUT: touch disabled by option; GPIO keys only\n");
     }
     loop=IOWorkLoop::workLoop();if(!loop)return false;
     timer=IOTimerEventSource::timerEventSource(this,&B2LInput::poll);
     if(!timer||loop->addEventSource(timer)!=kIOReturnSuccess)return false;
     timer->setTimeoutMS(20);registerService();
-    IOLog("B2L INPUT: GPIO GPA0.3/4/6 GPA2.4; active-low; Bixby=Home; sec_ts=%s\n",
-        !touchEnabled?"disabled":(touch?"ready":"unavailable"));
+    IOLog("B2L INPUT: GPIO GPA0.3/4/6 GPA2.4; active-low; Bixby=Home; sec_ts=%s sniff=%d log=%d\n",
+        !touchEnabled?"disabled":(touch?"ready":"unavailable"),touchSniff,touchLog);
     return true;
 }
 void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
@@ -203,24 +248,14 @@ void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
         uint8_t events[32][B2L_SEC_TS_EVENT_SIZE]={{0}};
         bool ok=s->command(0x60,events[0],B2L_SEC_TS_EVENT_SIZE);
         if(ok && events[0][0]){
-            ++s->eventCount;
-            if(B2LSecTsParseEvent(events[0],&s->pointer)==B2LSecTsUpdated){
-                ++s->updateCount;
-                b2l_hid_touch(0,s->pointer.Active,s->pointer.X,s->pointer.Y);
-            }
+            s->handleEvent(events[0]);
             unsigned remaining=B2LSecTsRemainingEvents(events[0]);
             if(remaining>s->maxPending)s->maxPending=remaining;
             unsigned count=remaining<31?remaining:31;
             if(count){
                 ++s->bulkCount;
                 ok=s->command(0x61,&events[1][0],count*B2L_SEC_TS_EVENT_SIZE);
-                if(ok)for(unsigned i=1;i<=count;++i){
-                    ++s->eventCount;
-                    if(B2LSecTsParseEvent(events[i],&s->pointer)==B2LSecTsUpdated){
-                        ++s->updateCount;
-                        b2l_hid_touch(0,s->pointer.Active,s->pointer.X,s->pointer.Y);
-                    }
-                }
+                if(ok)for(unsigned i=1;i<=count;++i)s->handleEvent(events[i]);
             }
         }
         if(!ok)++s->transferFailures;
@@ -236,16 +271,36 @@ void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
     if(end-s->lastDiagnostic>=10000000){
         s->lastDiagnostic=end;
         /* The option block is read from storage and may be applied after this
-         * driver starts; honour a late "touch=0" without waiting for a reboot. */
-        if(s->touchEnabled && b2l_option_int("touch","b2l_touch",1)==0){
-            s->touchEnabled=false;
-            if(s->touch){s->touch=false;s->quiesce();}
-            b2l_diag_record("B2L INPUT: touch disabled at runtime by option\n");
+         * driver starts; honour a late "touch=0" without waiting for a reboot.
+         * Sniff mode overrides the kill switch: it never delivers events. */
+        int optTouch=b2l_option_int("touch","b2l_touch",1);
+        int optSniff=b2l_option_int("touch_sniff","b2l_touch_sniff",0);
+        s->touchLog=b2l_option_int("touch_log","b2l_touch_log",0)!=0;
+        if(optTouch==0&&!optSniff){
+            if(s->touchEnabled||s->touch){
+                s->touchEnabled=false;s->touchSniff=false;
+                if(s->touch){s->touch=false;s->quiesce();}
+                b2l_diag_record("B2L INPUT: touch disabled at runtime by option\n");
+            }
+        }else{
+            s->touchSniff=optSniff!=0;
+            if(s->touchSniff&&!s->touchEnabled&&s->i2c){
+                s->touchEnabled=true;
+                if(!s->touch){
+                    s->initializeTouch();
+                    b2l_diag_record("B2L INPUT: touch sniff enabled at runtime\n");
+                }
+            }
         }
-        b2l_diag_record("B2L INPUT PERF: sec=%llu polls=%llu wire=%llu updates=%llu bulk=%llu max_pending=%u transfer_failures=%llu max_gap_us=%llu max_work_us=%llu max_transfer_us=%llu bus_us=%llu enabled=%d init_attempts=%u init_pending=%d\n",
+        b2l_diag_record("B2L INPUT PERF: sec=%llu polls=%llu wire=%llu updates=%llu bulk=%llu max_pending=%u transfer_failures=%llu max_gap_us=%llu max_work_us=%llu max_transfer_us=%llu bus_us=%llu enabled=%d sniff=%d init_attempts=%u init_pending=%d\n",
             end/1000000,s->pollCount,s->eventCount,s->updateCount,s->bulkCount,
             s->maxPending,s->transferFailures,s->maxPollGapUS,s->maxPollWorkUS,
-            s->maxTransferUS,s->transferTimeUS,s->touch,s->initAttempts,s->initPending);
+            s->maxTransferUS,s->transferTimeUS,s->touch,s->touchSniff,
+            s->initAttempts,s->initPending);
+        if(s->touchSniff||s->touchLog)
+            b2l_diag_record("B2L TOUCH SAMPLE: seen=%u logged=%u press=%u move=%u release=%u ignored=%u pmin=%u pmax=%u\n",
+                s->rawSeen,s->rawLogged,s->pressSeen,s->moveSeen,s->releaseSeen,
+                s->ignoredSeen,s->pressSeen?s->pressureMin:0,s->pressureMax);
         s->maxPending=0;s->maxPollGapUS=0;s->maxPollWorkUS=0;s->maxTransferUS=0;
     }
     sender->setTimeoutMS(20);

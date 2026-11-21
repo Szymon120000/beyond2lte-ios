@@ -42,6 +42,12 @@
 
 #define CHG_INT_OK         0xB2
 #define CHG_DETAILS_00     0xB3
+/* CHG_INT_OK bit 6 is CHGIN_OK (charger input present); bit 1 is
+ * DISQBAT_OK (discharge allowed), which is set even with no cable.
+ * The MAX77705 header in Samsung's kernel defines both explicitly. */
+#define CHGIN_OK_MASK      0x40u
+#define CHGIN_DTLS_MASK    0x60u
+#define CHGIN_DTLS_SHIFT   5
 #define CHG_CNFG_00        0xB7
 #define CHG_CNFG_02        0xB9
 #define CHG_CNFG_06        0xBD
@@ -178,7 +184,8 @@ class B2LPower : public IOService {
     unsigned socTenths, vcellMv;
     int currentMa, tempTenths;
     uint16_t fgStatus, fgTemp;
-    uint8_t chgIntOk;                 /* CHG_INT_OK, bit 1 = input power */
+    uint8_t chgIntOk;                 /* CHG_INT_OK, bit 6 = CHGIN_OK */
+    uint8_t chgDetails;               /* CHG_DETAILS_00, CHGIN state [6:5] */
     AppleSmartBattery *battery;       /* IOPMPowerSource the iOS UI reads */
     static uint64_t uptimeUS(){
         uint64_t ns=0;
@@ -638,11 +645,14 @@ static int b2l_fg_temp_tenths(uint16_t raw){
 
 void B2LPower::sample(){
     uint16_t soc=0,vcell=0,current=0,temp=0,status=0;
-    uint8_t intok=0;
+    uint8_t intok=0,details=0;
     /* CHG_INT_OK tells whether the input supply is present even before the
-     * gauge has a usable frame. Bit 1 (CHGIN_OK) is the input-power-good
-     * flag; keep the last value if the read fails. */
+     * gauge has a usable frame. Bit 6 (CHGIN_OK, 0x40) is the input-power-good
+     * flag; bit 1 is DISQBAT_OK and is set even without a cable. CHG_DETAILS_00
+     * [6:5] is logged as an independent second opinion. Keep the last value
+     * if a read fails. */
     if(readRegs(B2L_CHG_ADDR,CHG_INT_OK,&intok,1))chgIntOk=intok;
+    if(readRegs(B2L_CHG_ADDR,CHG_DETAILS_00,&details,1))chgDetails=details;
     bool okSoc=readWord(B2L_FG_ADDR,FG_SOC,&soc);
     bool okCell=readWord(B2L_FG_ADDR,FG_VCELL,&vcell);
     bool okCurrent=readWord(B2L_FG_ADDR,FG_CURRENT,&current);
@@ -672,12 +682,11 @@ void B2LPower::publish(){
     setProperty("B2LChargerReady",chargerReady);
     setProperty("B2LGaugeReady",gaugeReady);
     if(battery){
-        /* CHGIN_OK (bit 1) says the charger sees input power. The gauge on
-         * this unit reports charge current as a negative number, so publish
-         * the iOS sign convention: positive while charging, negative while
-         * running from the pack. */
+        /* CHGIN_OK (bit 6) says the charger sees input power. Bit 1 was used
+         * before and is DISQBAT_OK, which stays set with the cable removed,
+         * so the status bar showed "charging" permanently. */
         unsigned percent=socTenths/10;
-        bool external=(chgIntOk&0x02)!=0;
+        bool external=(chgIntOk&CHGIN_OK_MASK)!=0;
         bool full=percent>=100;
         bool charging=external&&!full&&tempTenths<600;
         int amps=currentMa<0?-currentMa:currentMa;
@@ -705,11 +714,12 @@ void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
     s->sample();
     s->thermalGuard();
     s->publish();
-    if(s->ticks%12==0){
+    if(s->ticks%12==0||b2l_option_int("power_dbg","b2l_power_dbg",0)==1){
         int tt=s->tempTenths,at=tt<0?-tt:tt;
-        IOLog("B2L POWER: soc=%u.%u%% vcell=%u mV current=%d mA temp=%s%d.%d C status=0x%04x int_ok=0x%02x chg_ok=%d fg_ok=%d\n",
+        IOLog("B2L POWER: soc=%u.%u%% vcell=%u mV current=%d mA temp=%s%d.%d C status=0x%04x int_ok=0x%02x details=0x%02x ext=%d dtls_ext=%d chg_ok=%d fg_ok=%d\n",
             s->socTenths/10,s->socTenths%10,s->vcellMv,s->currentMa,
-            tt<0?"-":"",at/10,at%10,s->fgStatus,s->chgIntOk,
+            tt<0?"-":"",at/10,at%10,s->fgStatus,s->chgIntOk,s->chgDetails,
+            (s->chgIntOk&CHGIN_OK_MASK)!=0,(s->chgDetails&CHGIN_DTLS_MASK)!=0,
             s->chargerReady,s->gaugeReady);
     }
 }
@@ -722,7 +732,7 @@ bool B2LPower::start(IOService *provider){
      * it, so the service still starts and probe() falls back. */
     if(i2cMap)i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
     timeoutUS=50000;halfUs=B2L_BB_HALF_US;bbSawCharger=false;
-    chgIntOk=0;battery=NULL;
+    chgIntOk=0;chgDetails=0;battery=NULL;
     probe();
     /* IOWorkLoop::workLoop() can return a fresh loop with no thread behind
      * it, in which case the timer never fires (exactly what happened on the
