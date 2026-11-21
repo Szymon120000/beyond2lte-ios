@@ -492,13 +492,29 @@ static void b2l_start_options(void)
      b2l_option_int("native_cache","b2l_native_cache",0),
      b2l_option_int("graphics_compat","b2l_graphics_compat",1),
      b2l_option_int("hfs_compat","b2l_hfs_compat",1),
-     b2l_option_int("system_log","b2l_system_log",0),
+     b2l_option_int("system_log","b2l_system_log",1),
      b2l_option_int("diag","b2l_diag",0));
+}
+
+/* The console is a debugging aid, not a payload: an unformatted or
+ * legacy-sized header must not silently disable logging. Only the two header
+ * pages inside the reserved tail are rewritten; HFS/cache bytes are untouched. */
+static int b2l_format_system_log(void)
+{
+ unsigned char page[B2L_LOG_PAGE_BYTES];int error=0;
+ for(unsigned epoch=0;epoch<2&&!error;epoch++){
+  b2l_log_make_header(page,epoch);
+  error=b2l_aux_log_write(&b2l_aux_log_reader,(uint64_t)epoch*B2L_LOG_PAGE_BYTES,page,sizeof(page));
+ }
+ if(!error)error=b2l_aux_log_sync(&b2l_aux_log_reader);
+ if(error)printf("B2L LOG: region format failed error=%d\n",error);
+ else printf("B2L LOG: formatted %u-byte console region; old headers were unusable\n",(unsigned)B2L_LOG_REGION_BYTES);
+ return error;
 }
 
 static void b2l_start_system_log(void)
 {
- if(b2l_option_int("system_log","b2l_system_log",0)!=1)return;
+ if(b2l_option_int("system_log","b2l_system_log",1)!=1)return;
  struct b2l_ufs_aux_layout layout;uint64_t capacity;unsigned char first[512],last[512];size_t done=0;
  int error=b2l_ufs_capacity(&b2l_reader,&capacity);
  if(!error)error=b2l_ufs_aux_layout(&b2l_partitions,b2l_root_index,b2l_reader.block_size,capacity,&layout);
@@ -517,8 +533,8 @@ static void b2l_start_system_log(void)
  b2l_aux_log_reader.writable_size=layout.log_size;
  const struct b2l_log_sink sink={b2l_aux_log_read,b2l_aux_log_write,b2l_aux_log_sync,&b2l_aux_log_reader,layout.log_size};
  error=b2l_log_start(&sink);
- if(error)printf("B2L LOG: provisioned region rejected error=%d%s\n",error,
-     error==B2L_LOG_INVALID_HEADER?"; legacy 16 MiB header, run b2l-opt.sh init-log":"");
+ if(error==B2L_LOG_INVALID_HEADER&&!b2l_format_system_log())error=b2l_log_start(&sink);
+ if(error)printf("B2L LOG: persistent console unavailable error=%d\n",error);
  else {
   b2l_aux_cache_index=layout.index;b2l_aux_cache_size=layout.hfs_size;
   printf("B2L LOG: SYSTEM p%u persistent console enabled; HFS cache bytes=%llu; log bytes=%llu\n",layout.index,layout.hfs_size,layout.log_size);

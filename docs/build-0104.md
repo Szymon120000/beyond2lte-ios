@@ -33,7 +33,7 @@ previous boot-argument behaviour exactly.
 | `native_cache` | `b2l_native_cache` | 0 | ARM64e persistent translation cache: apply and learn |
 | `graphics_compat` | `b2l_graphics_compat` | 1 | `DYLD_INSERT_LIBRARIES` for SpringBoard, backboardd, Preferences, iconservicesagent |
 | `hfs_compat` | `b2l_hfs_compat` | 1 | `DYLD_INSERT_LIBRARIES` for installd and the MobileInstallation helper |
-| `system_log` | `b2l_system_log` | 0 | framed persistent console in the SYSTEM tail |
+| `system_log` | `b2l_system_log` | 1 | framed persistent console in the SYSTEM tail |
 | `diag` | `b2l_diag` | 0 | progress/backtrace traces and `CG_CONTEXT_SHOW_BACKTRACE` |
 
 The kernel prints one line per boot:
@@ -43,6 +43,11 @@ B2L OPTIONS: block applied; native_cache=0 graphics_compat=1 hfs_compat=1 system
 ```
 
 `block empty` or `block unavailable error=...` means the boot arguments applied.
+
+Logging is now permanent by default: with no option block at all the console
+still starts, and if the tail carries an unusable header (for example the
+legacy 16 MiB geometry) the kernel rewrites only the two header pages and
+keeps logging. A boot can no longer lose its log because a header was stale.
 
 ## Changing options on the phone
 
@@ -84,3 +89,27 @@ boundary and that console plus block plus HFS still add up to the partition size
 `scripts/b2l-log-region.py` decodes both the new 16 MiB - 4 KiB headers and
 legacy 16 MiB regions. `scripts/pull-b2l-log.py` keeps reading the last 16 MiB of
 SYSTEM, which now includes the block after the last console record.
+
+## Permanent operation
+
+Three things must work without a rebuild or a manual step after this image:
+
+* **Real date and time.** XNU seeds the calendar from `PEGetUTCTimeOfDay()`
+  once IOKit is up. `B2LPlatformExpert` now implements `getGMTTimeOfDay()` by
+  reading the Exynos 9820 always-on RTC at `0x15950000` (`samsung,exynos8-rtc`,
+  the same node Android uses): BCD sec/min/hour/date/month and the 16-bit
+  two-digit year register. The value is validated as a real date between 2020
+  and 2100 before it is used, so an unset RTC falls back to the previous
+  behaviour instead of showing 1970. `b2l_utc=<seconds>` can override it.
+  The kernel only reads the RTC; Android's alarms and the RTC registers are
+  never modified.
+* **Charging.** The MAX77705 service (`B2LPower`, hsi2c_45, charger 0x69, gauge
+  0x36) is part of this image for the first time. It selects buck+charger mode,
+  raises `CHGIN_LIM`, enables charging, kicks the charger watchdog and samples
+  state of charge, cell voltage, current and temperature. Its probe, including
+  the GPIO bit-bang fallback, is in the persistent console as `B2L POWER ...`.
+* **Permanent logging.** `system_log` defaults to 1 and the region formats
+  itself; `diag=1` adds the progress/Mach traces. `B2L OPTIONS`, `B2L LOG`,
+  `B2L RTC` and `B2L POWER` lines tell exactly how far a boot got.
+
+`b2l-opt.sh init-log` remains available but is no longer required.

@@ -30,3 +30,6 @@ mkdir -p "$build_dir"
 
 # The SYSTEM option block must never turn a typo into a behaviour change.
 "${PYTHON:-python3}" "$repo_root/tests/test-option-file.py"
+
+# The calendar must never be seeded from a malformed RTC frame.
+"${PYTHON:-python3}" "$repo_root/tests/test-rtc-decode.py"
