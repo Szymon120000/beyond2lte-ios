@@ -51,16 +51,30 @@ b2l_rtc_read(void)
 		IOLog("B2L RTC: no virtual address; calendar left unset\n");
 		return 0;
 	}
-	uint8_t raw[7] = {
-		b[B2L_RTC_REG_SEC], b[B2L_RTC_REG_MIN], b[B2L_RTC_REG_HOUR],
-		b[B2L_RTC_REG_DATE], b[B2L_RTC_REG_MON], b[B2L_RTC_REG_YEAR],
-		b[B2L_RTC_REG_YEAR + 1]
-	};
+	/* The s3c RTC latches a consistent frame for the whole second, but a read
+	 * that straddles the rollover can mix two seconds. The vendor read-time
+	 * path retries when the seconds register changed during the read; do the
+	 * same so the calendar is never seeded one second into the future. */
+	uint8_t raw[7];
+	unsigned attempt;
+	for (attempt = 0; attempt < 3; attempt++) {
+		uint8_t before = b[B2L_RTC_REG_SEC];
+		raw[0] = b[B2L_RTC_REG_SEC];
+		raw[1] = b[B2L_RTC_REG_MIN];
+		raw[2] = b[B2L_RTC_REG_HOUR];
+		raw[3] = b[B2L_RTC_REG_DATE];
+		raw[4] = b[B2L_RTC_REG_MON];
+		raw[5] = b[B2L_RTC_REG_YEAR];
+		raw[6] = b[B2L_RTC_REG_YEAR + 1];
+		if (raw[0] == b[B2L_RTC_REG_SEC] && (before != 0 || attempt != 0)) {
+			break;
+		}
+	}
 	uint8_t con = b[B2L_RTC_REG_CON];
 	uint64_t epoch = b2l_rtc_decode(raw);
-	IOLog("B2L RTC: rtcen=%d raw=%02x %02x %02x %02x %02x %02x%02x epoch=%llu\n",
+	IOLog("B2L RTC: rtcen=%d raw=%02x %02x %02x %02x %02x %02x%02x epoch=%llu attempts=%u\n",
 	    (con & B2L_RTC_CON_EN) ? 1 : 0, raw[0], raw[1], raw[2], raw[3], raw[4],
-	    raw[6], raw[5], epoch);
+	    raw[6], raw[5], epoch, attempt + 1);
 	if (epoch == 0) {
 		IOLog("B2L RTC: no plausible date; calendar will stay at the platform default\n");
 	}
@@ -106,6 +120,11 @@ B2LPlatformExpert::start(IOService *provider)
     uint32_t sleepDisabled=0;
     if(PE_get_default("sleep-disabled",&sleepDisabled,sizeof(sleepDisabled)) && sleepDisabled)
         IOLog("B2L PM: system sleep disabled until CPU suspend/resume support is available\n");
+	/* bsd_init waits up to 30 seconds for an IORTC resource before it seeds
+	 * the calendar. The platform expert is the RTC here, so publish the
+	 * resource now and the boot no longer stalls for half a minute. */
+	IOService::publishResource("IORTC");
+	IOLog("B2L RTC: IORTC resource published; calendar comes from the Exynos RTC\n");
 	registerService();
 	IOLog("B2L: platform expert registered; software product iPhone17,2, Samsung B2L hardware\n");
 	return true;
