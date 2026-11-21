@@ -123,16 +123,15 @@ bool AppleSmartBattery::init(){
 }
 
 void AppleSmartBattery::setNumber(const char *key,uint64_t value){
-    OSSymbol *sym=OSSymbol::withCString(key);
-    OSNumber *num=OSNumber::withNumber((unsigned long long)value,32);
-    if(sym&&num)setPSProperty(sym,num);
-    if(num)num->release();
-    if(sym)sym->release();
+    /* withCString/withNumber return OSPtr in this XNU, so keep the smart
+     * pointers and hand the raw pointers to setPSProperty. */
+    auto sym=OSSymbol::withCString(key);
+    auto num=OSNumber::withNumber((unsigned long long)value,32);
+    if(sym&&num)setPSProperty(sym.get(),num.get());
 }
 
 void AppleSmartBattery::report(unsigned socPercent,unsigned mv,int amps,
     bool external,bool charging,bool full,int tempTenths){
-    OSSymbol *fullKey;
     setBatteryInstalled(true);
     setExternalConnected(external);
     setExternalChargeCapable(external);
@@ -144,10 +143,9 @@ void AppleSmartBattery::report(unsigned socPercent,unsigned mv,int amps,
     setTimeRemaining(charging?120:0);
     setAtCriticalLevel(!external&&socPercent<=2);
     setAtWarnLevel(!external&&socPercent<=10);
-    fullKey=OSSymbol::withCString("FullyCharged");
+    auto fullKey=OSSymbol::withCString("FullyCharged");
     if(fullKey){
-        setPSProperty(fullKey,full?kOSBooleanTrue:kOSBooleanFalse);
-        fullKey->release();
+        setPSProperty(fullKey.get(),full?kOSBooleanTrue:kOSBooleanFalse);
     }
     setNumber("BatteryTemperature",(uint64_t)(tempTenths<0?-tempTenths:tempTenths));
     updateStatus();
