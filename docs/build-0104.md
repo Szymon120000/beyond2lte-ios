@@ -35,6 +35,7 @@ previous boot-argument behaviour exactly.
 | `hfs_compat` | `b2l_hfs_compat` | 1 | `DYLD_INSERT_LIBRARIES` for installd and the MobileInstallation helper |
 | `system_log` | `b2l_system_log` | 1 | framed persistent console in the SYSTEM tail |
 | `diag` | `b2l_diag` | 0 | progress/backtrace traces and `CG_CONTEXT_SHOW_BACKTRACE` |
+| `unix_time` | `b2l_utc` | none | flash-time clock seed, used only if the RTC is unset |
 
 The kernel prints one line per boot:
 
@@ -102,7 +103,9 @@ Three things must work without a rebuild or a manual step after this image:
   and 2100 before it is used, so an unset RTC falls back to the previous
   behaviour instead of showing 1970. `b2l_utc=<seconds>` can override it.
   The kernel only reads the RTC; Android's alarms and the RTC registers are
-  never modified.
+  never modified. As a fallback for a dead or unset RTC the option block may
+  carry `unix_time=<seconds>` (written at flash time); BSD init applies it only
+  when the calendar is still before 2020, so a missing RTC no longer means 1970.
 * **Charging.** The MAX77705 service (`B2LPower`, hsi2c_45, charger 0x69, gauge
   0x36) is part of this image for the first time. It selects buck+charger mode,
   raises `CHGIN_LIM`, enables charging, kicks the charger watchdog and samples
