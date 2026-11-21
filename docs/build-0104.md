@@ -103,14 +103,20 @@ Three things must work without a rebuild or a manual step after this image:
   and 2100 before it is used, so an unset RTC falls back to the previous
   behaviour instead of showing 1970. `b2l_utc=<seconds>` can override it.
   The kernel only reads the RTC; Android's alarms and the RTC registers are
-  never modified. As a fallback for a dead or unset RTC the option block may
+  never modified. The frame is re-read when the seconds register changes during
+  the read, so a read across the rollover cannot seed the clock wrong. As a fallback for a dead or unset RTC the option block may
   carry `unix_time=<seconds>` (written at flash time); BSD init applies it only
   when the calendar is still before 2020, so a missing RTC no longer means 1970.
+  The platform expert also publishes the `IORTC` resource; without it
+  `bsd_init` stalled for 30 seconds before it seeded the calendar at all, which
+  delayed every boot and every userspace timestamp.
 * **Charging.** The MAX77705 service (`B2LPower`, hsi2c_45, charger 0x69, gauge
   0x36) is part of this image for the first time. It selects buck+charger mode,
   raises `CHGIN_LIM`, enables charging, kicks the charger watchdog and samples
   state of charge, cell voltage, current and temperature. Its probe, including
   the GPIO bit-bang fallback, is in the persistent console as `B2L POWER ...`.
+  If the USI registers cannot be mapped the driver never dereferences a NULL
+  base: every access fails cleanly and the GPIO path is used instead.
 * **Permanent logging.** `system_log` defaults to 1 and the region formats
   itself; `diag=1` adds the progress/Mach traces. `B2L OPTIONS`, `B2L LOG`,
   `B2L RTC` and `B2L POWER` lines tell exactly how far a boot got.
