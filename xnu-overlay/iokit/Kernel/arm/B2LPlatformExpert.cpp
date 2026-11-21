@@ -10,6 +10,7 @@
 #include <libkern/c++/OSData.h>
 #include <pexpert/pexpert.h>
 #include <kern/clock.h>
+#include <mach/mach_time.h>
 #include "b2l_rtc.h"
 
 class B2LPlatformExpert : public IODTPlatformExpert {
