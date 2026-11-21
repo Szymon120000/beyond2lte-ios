@@ -26,6 +26,10 @@
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <IOKit/IOMemoryDescriptor.h>
+#include <IOKit/pwr_mgt/IOPMPowerSource.h>
+#include <libkern/c++/OSBoolean.h>
+#include <libkern/c++/OSNumber.h>
+#include <libkern/c++/OSSymbol.h>
 #include <kern/clock.h>
 
 /* MAX77705 exposes several I2C slave addresses. 0x66 is the PMIC block (its
@@ -89,6 +93,72 @@
 #define B2L_BB_SDA_PIN     0u
 #define B2L_BB_HALF_US     5    /* 100 kHz */
 
+/* The iOS power UI asks IOPS for a battery. This port has a charger and a
+ * fuel gauge but no Apple battery driver, so nothing published a power
+ * source and the status bar had no level or charging state. XNU's
+ * IOPMPowerSource is the registry contract IOPS reads; publishing under the
+ * name the closed driver uses keeps both the class-name and the
+ * IOPMPowerSource matching paths working. The class is built here instead of
+ * a separate file only so it shares B2LPower's sample loop. */
+class AppleSmartBattery : public IOPMPowerSource {
+    OSDeclareDefaultStructors(AppleSmartBattery);
+    unsigned long updates;
+    void setNumber(const char *key,uint64_t value);
+public:
+    bool init() APPLE_KEXT_OVERRIDE;
+    void report(unsigned socPercent,unsigned mv,int amps,bool external,
+        bool charging,bool full,int tempTenths);
+};
+OSDefineMetaClassAndStructors(AppleSmartBattery,IOPMPowerSource);
+
+bool AppleSmartBattery::init(){
+    if(!IOPMPowerSource::init())return false;
+    updates=0;
+    setBatteryInstalled(true);
+    setMaxCapacity(100);
+    setNumber("DesignCapacity",4100);
+    setNumber("NominalChargeCapacity",4100);
+    setNumber("CycleCount",0);
+    return true;
+}
+
+void AppleSmartBattery::setNumber(const char *key,uint64_t value){
+    OSSymbol *sym=OSSymbol::withCString(key);
+    OSNumber *num=OSNumber::withNumber((unsigned long long)value,32);
+    if(sym&&num)setPSProperty(sym,num);
+    if(num)num->release();
+    if(sym)sym->release();
+}
+
+void AppleSmartBattery::report(unsigned socPercent,unsigned mv,int amps,
+    bool external,bool charging,bool full,int tempTenths){
+    OSSymbol *fullKey;
+    setBatteryInstalled(true);
+    setExternalConnected(external);
+    setExternalChargeCapable(external);
+    setIsCharging(charging);
+    setCurrentCapacity(socPercent>100?100:socPercent);
+    setMaxCapacity(100);
+    setVoltage(mv);
+    setAmperage(amps);
+    setTimeRemaining(charging?120:0);
+    setAtCriticalLevel(!external&&socPercent<=2);
+    setAtWarnLevel(!external&&socPercent<=10);
+    fullKey=OSSymbol::withCString("FullyCharged");
+    if(fullKey){
+        setPSProperty(fullKey,full?kOSBooleanTrue:kOSBooleanFalse);
+        fullKey->release();
+    }
+    setNumber("BatteryTemperature",(uint64_t)(tempTenths<0?-tempTenths:tempTenths));
+    updateStatus();
+    if(updates++<5){
+        int t=tempTenths<0?-tempTenths:tempTenths;
+        IOLog("B2L BATTERY: soc=%u%% v=%u mV a=%d mA ext=%d chg=%d full=%d temp=%s%d.%d C\n",
+            socPercent,mv,amps,external,charging,full,tempTenths<0?"-":"",t/10,t%10);
+    }
+}
+
+
 class B2LPower : public IOService {
     OSDeclareDefaultStructors(B2LPower);
     IOMemoryDescriptor *i2cDesc;
@@ -107,6 +177,8 @@ class B2LPower : public IOService {
     unsigned socTenths, vcellMv;
     int currentMa, tempTenths;
     uint16_t fgStatus, fgTemp;
+    uint8_t chgIntOk;                 /* CHG_INT_OK, bit 1 = input power */
+    AppleSmartBattery *battery;       /* IOPMPowerSource the iOS UI reads */
     static uint64_t uptimeUS(){
         uint64_t ns=0;
         absolutetime_to_nanoseconds(mach_absolute_time(),&ns);
@@ -445,6 +517,7 @@ void B2LPower::probe(){
             okb3=readRegs(B2L_CHG_ADDR,CHG_DETAILS_00,&details,1);
         }
         chargerReady=ok00&&ok02&&ok06&&ok09;
+        if(okb2)chgIntOk=intok;
         /* A dead bus reads back one repeated value. Never program a charger
          * whose configuration registers cannot be distinguished. */
         if(chargerReady && cnfg00==cnfg02 && cnfg02==cnfg06 && cnfg06==cnfg09 &&
@@ -564,6 +637,11 @@ static int b2l_fg_temp_tenths(uint16_t raw){
 
 void B2LPower::sample(){
     uint16_t soc=0,vcell=0,current=0,temp=0,status=0;
+    uint8_t intok=0;
+    /* CHG_INT_OK tells whether the input supply is present even before the
+     * gauge has a usable frame. Bit 1 (CHGIN_OK) is the input-power-good
+     * flag; keep the last value if the read fails. */
+    if(readRegs(B2L_CHG_ADDR,CHG_INT_OK,&intok,1))chgIntOk=intok;
     bool okSoc=readWord(B2L_FG_ADDR,FG_SOC,&soc);
     bool okCell=readWord(B2L_FG_ADDR,FG_VCELL,&vcell);
     bool okCurrent=readWord(B2L_FG_ADDR,FG_CURRENT,&current);
@@ -592,6 +670,19 @@ void B2LPower::publish(){
     setProperty("B2LBatteryCurrent_mA",(long long)currentMa,32);
     setProperty("B2LChargerReady",chargerReady);
     setProperty("B2LGaugeReady",gaugeReady);
+    if(battery){
+        /* CHGIN_OK (bit 1) says the charger sees input power. The gauge on
+         * this unit reports charge current as a negative number, so publish
+         * the iOS sign convention: positive while charging, negative while
+         * running from the pack. */
+        unsigned percent=socTenths/10;
+        bool external=(chgIntOk&0x02)!=0;
+        bool full=percent>=100;
+        bool charging=external&&!full&&tempTenths<600;
+        int amps=currentMa<0?-currentMa:currentMa;
+        if(!charging)amps=-amps;
+        battery->report(percent,vcellMv,amps,external,charging,full,tempTenths);
+    }
 }
 
 void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
@@ -615,9 +706,9 @@ void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
     s->publish();
     if(s->ticks%12==0){
         int tt=s->tempTenths,at=tt<0?-tt:tt;
-        IOLog("B2L POWER: soc=%u.%u%% vcell=%u mV current=%d mA temp=%s%d.%d C status=0x%04x chg_ok=%d fg_ok=%d\n",
+        IOLog("B2L POWER: soc=%u.%u%% vcell=%u mV current=%d mA temp=%s%d.%d C status=0x%04x int_ok=0x%02x chg_ok=%d fg_ok=%d\n",
             s->socTenths/10,s->socTenths%10,s->vcellMv,s->currentMa,
-            tt<0?"-":"",at/10,at%10,s->fgStatus,
+            tt<0?"-":"",at/10,at%10,s->fgStatus,s->chgIntOk,
             s->chargerReady,s->gaugeReady);
     }
 }
@@ -630,6 +721,7 @@ bool B2LPower::start(IOService *provider){
      * it, so the service still starts and probe() falls back. */
     if(i2cMap)i2c=(volatile uint8_t*)i2cMap->getVirtualAddress();
     timeoutUS=50000;halfUs=B2L_BB_HALF_US;bbSawCharger=false;
+    chgIntOk=0;battery=NULL;
     probe();
     /* IOWorkLoop::workLoop() can return a fresh loop with no thread behind
      * it, in which case the timer never fires (exactly what happened on the
@@ -647,6 +739,18 @@ bool B2LPower::start(IOService *provider){
     IOLog("B2L POWER: tick timer armed on %s workloop\n",
         provider?"provider":"private");
     registerService();
+    /* Publish the battery nub before the first sample so the power UI has a
+     * source as soon as userspace asks for one. */
+    battery=new AppleSmartBattery;
+    if(battery){
+        if(!battery->init()||!battery->attach(this)){
+            IOLog("B2L BATTERY: service could not be published\n");
+            battery->release();battery=NULL;
+        }else{
+            battery->registerService();
+            IOLog("B2L BATTERY: IOPMPowerSource published as AppleSmartBattery\n");
+        }
+    }
     publish();
     IOLog("B2L POWER: MAX77705 service registered charger=%d gauge=%d\n",
         chargerReady,gaugeReady);

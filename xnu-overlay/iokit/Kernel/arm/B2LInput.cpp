@@ -17,6 +17,7 @@ extern "C" {
 }
 extern "C" void b2l_hid_key(int,int);
 extern "C" void b2l_hid_touch(int,int,int,int);
+extern "C" int b2l_option_int(const char*,const char*,int);
 class B2LInput : public IOService {
     OSDeclareDefaultStructors(B2LInput);
     IOMemoryDescriptor *gpioDesc,*i2cDesc;
@@ -24,7 +25,7 @@ class B2LInput : public IOService {
     IOWorkLoop *loop;
     IOTimerEventSource *timer;
     volatile uint8_t *gpio,*i2c;
-    bool stable[4],candidate[4],touch;
+    bool stable[4],candidate[4],touch,touchEnabled;
     unsigned debounce[4],failures,keyLogs,transferLogs,timeoutUS;
     unsigned initAttempts;
     bool initPending;
@@ -140,6 +141,15 @@ bool B2LInput::start(IOService *provider){
     gpio=(volatile uint8_t*)gpioMap->getVirtualAddress();
     const unsigned masks[4]={1u<<4,1u<<3,1u<<4,1u<<6};
     for(unsigned k=0;k<4;++k){unsigned off=k?4:0x44;bool down=!( *(volatile uint32_t*)(gpio+off)&masks[k]);stable[k]=candidate[k]=down;}
+    /* The digitizer on this unit is damaged and emits contacts with no finger
+     * present. Option "touch=0" keeps the power/volume/home keys but never
+     * talks to the touch controller, so ghost contacts cannot reach
+     * backboardd. It defaults to 1 so an absent option changes nothing. */
+    touchEnabled=b2l_option_int("touch","b2l_touch",1)!=0;
+    if(!touchEnabled){
+        touch=false;
+        b2l_diag_record("B2L INPUT: touch disabled by option; GPIO keys only\n");
+    }else{
     i2cDesc=IOMemoryDescriptor::withPhysicalAddress(0x104b0000,4096,kIODirectionInOut);
     if(i2cDesc)i2cMap=i2cDesc->map(kIOMapInhibitCache);
     if(i2cMap){
@@ -158,11 +168,13 @@ bool B2LInput::start(IOService *provider){
          * boot. Retry on this driver's workloop, at most four attempts total. */
         initializeTouch();
     }
+    }
     loop=IOWorkLoop::workLoop();if(!loop)return false;
     timer=IOTimerEventSource::timerEventSource(this,&B2LInput::poll);
     if(!timer||loop->addEventSource(timer)!=kIOReturnSuccess)return false;
     timer->setTimeoutMS(20);registerService();
-    IOLog("B2L INPUT: GPIO GPA0.3/4/6 GPA2.4; active-low; Bixby=Home; sec_ts=%s\n",touch?"ready":"unavailable");
+    IOLog("B2L INPUT: GPIO GPA0.3/4/6 GPA2.4; active-low; Bixby=Home; sec_ts=%s\n",
+        !touchEnabled?"disabled":(touch?"ready":"unavailable"));
     return true;
 }
 void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
@@ -223,6 +235,13 @@ void B2LInput::poll(OSObject *owner,IOTimerEventSource *sender){
     if(work>s->maxPollWorkUS)s->maxPollWorkUS=work;
     if(end-s->lastDiagnostic>=10000000){
         s->lastDiagnostic=end;
+        /* The option block is read from storage and may be applied after this
+         * driver starts; honour a late "touch=0" without waiting for a reboot. */
+        if(s->touchEnabled && b2l_option_int("touch","b2l_touch",1)==0){
+            s->touchEnabled=false;
+            if(s->touch){s->touch=false;s->quiesce();}
+            b2l_diag_record("B2L INPUT: touch disabled at runtime by option\n");
+        }
         b2l_diag_record("B2L INPUT PERF: sec=%llu polls=%llu wire=%llu updates=%llu bulk=%llu max_pending=%u transfer_failures=%llu max_gap_us=%llu max_work_us=%llu max_transfer_us=%llu bus_us=%llu enabled=%d init_attempts=%u init_pending=%d\n",
             end/1000000,s->pollCount,s->eventCount,s->updateCount,s->bulkCount,
             s->maxPending,s->transferFailures,s->maxPollGapUS,s->maxPollWorkUS,

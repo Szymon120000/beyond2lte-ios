@@ -8,7 +8,7 @@
  *   offset 12   "key=value\n" lines, NUL padded
  *
  * Recognized keys (decimal integers): native_cache, graphics_compat,
- * hfs_compat, system_log, diag. A key that is absent falls back to the
+ * hfs_compat, system_log, diag, touch. A key that is absent falls back to the
  * matching b2l_<key> boot argument and then to the caller's default, so an
  * empty or missing block keeps the previous behaviour. */
 #ifndef _BSD_KERN_B2L_OPTIONS_H_
