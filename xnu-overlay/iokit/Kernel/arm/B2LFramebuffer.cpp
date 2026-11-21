@@ -148,12 +148,21 @@ AppleCLCD::start(IOService *provider)
 	fPanelSurface = b2l_surface_create_physical(fPhys, fPanelWidth, fPanelHeight,
 	    fPanelRowBytes, B2L_FB_FORMAT_BGRA);
 	fSurface = b2l_surface_create_buffer(fWidth, fHeight, fRowBytes, B2L_FB_FORMAT_BGRA);
+	if (fSurface == NULL && fPanelSurface != NULL) {
+		/* No memory for the reduced surface: scan out the panel directly,
+		 * exactly as earlier builds did. */
+		IOLog("B2L FB: render surface unavailable, using the panel at full size\n");
+		fWidth = fPanelWidth;
+		fHeight = fPanelHeight;
+		fRowBytes = fPanelRowBytes;
+		fSurface = fPanelSurface;
+	}
 	fPixels = fPanelSurface != NULL ? fPanelSurface->kernelAddress() : 0;
 	fWorkLoop = IOWorkLoop::workLoop();
 	if (fLock == NULL || fClients == NULL || fSurface == NULL || fPixels == 0 || fWorkLoop == NULL) {
 		IOLog("B2L FB: setup failed\n");
-		OSSafeReleaseNULL(fSurface);    /* stays published: also held by the table */
-		OSSafeReleaseNULL(fPanelSurface);
+		if (fSurface != fPanelSurface) OSSafeReleaseNULL(fSurface);
+		OSSafeReleaseNULL(fPanelSurface);    /* stays published: also held by the table */
 		OSSafeReleaseNULL(fWorkLoop);
 		return false;
 	}
@@ -342,7 +351,7 @@ AppleCLCD::swap(const uint8_t *rec)
 			__atomic_fetch_add(&b2l_fb_missing, 1, __ATOMIC_RELAXED);
 			continue;
 		}
-		if (s == fPanelSurface) {
+		if (s == fPanelSurface && fSurface != fPanelSurface) {
 			OSSafeReleaseNULL(s);
 			continue;
 		}
