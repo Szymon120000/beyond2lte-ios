@@ -328,6 +328,7 @@ OSDefineMetaClassAndStructors(B2LPower,IOService);
  * driver we have two slaves, so the field must be cleared before it is set.
  * stop=false leaves the bus held so a repeated start can follow. */
 bool B2LPower::message(uint8_t addr,uint8_t *buf,unsigned n,bool read,bool stop){
+    if(!i2c)return false;   /* the USI block was not mapped: only bit-bang is safe */
     if(!buf||!n||n>16)return false;
     const unsigned budgetUS=timeoutUS;
     const uint64_t begin=uptimeUS();
@@ -374,11 +375,13 @@ bool B2LPower::message(uint8_t addr,uint8_t *buf,unsigned n,bool read,bool stop)
  * read); probe() tries that when the split form returns a dead-bus pattern. */
 bool B2LPower::readRegs(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n){
     if(bitbang)return bbRead(addr,reg,buf,n);
+    if(!i2c)return false;
     resetController();
     if(!message(addr,&reg,1,false,true))return false;
     return message(addr,buf,n,true,true);
 }
 bool B2LPower::readRegsCombined(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n){
+    if(!i2c)return false;
     resetController();
     if(!message(addr,&reg,1,false,false))return false;
     return message(addr,buf,n,true,true);
@@ -386,6 +389,7 @@ bool B2LPower::readRegsCombined(uint8_t addr,uint8_t reg,uint8_t *buf,unsigned n
 bool B2LPower::writeReg(uint8_t addr,uint8_t reg,uint8_t value){
     uint8_t pair[2]={reg,value};
     if(bitbang)return bbWrite(addr,reg,value);
+    if(!i2c)return false;
     resetController();
     return message(addr,pair,2,false,true);
 }
@@ -402,9 +406,12 @@ void B2LPower::probe(){
     bool ok00=false,ok02=false,ok06=false,ok09=false,okb2=false,okb3=false;
     bool combined=false;
     const char *path="split";
+    /* A failed register mapping must never be dereferenced: go straight to
+     * the GPIO path instead of panicking on a NULL USI base. */
+    if(!i2c)IOLog("B2L POWER: USI block at 0x15D60000 was not mapped; using GPIO only\n");
     for(unsigned pass=0;pass<3;++pass){
         /* Once the pads are bit-banging, the USI passes cannot add anything. */
-        if(bitbang&&pass<2)continue;
+        if((bitbang||!i2c)&&pass<2)continue;
         combined=(pass==1);
         cnfg00=cnfg02=cnfg06=cnfg09=intok=details=0;
         if(pass==2){
