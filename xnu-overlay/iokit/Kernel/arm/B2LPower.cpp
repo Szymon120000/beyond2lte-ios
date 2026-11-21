@@ -32,6 +32,10 @@
 #include <libkern/c++/OSSymbol.h>
 #include <kern/clock.h>
 
+/* Runtime option block, shared with the BSD side. B2LInput declares this the
+ * same way; there is no public header on this include path. */
+extern "C" int b2l_option_int(const char*,const char*,int);
+
 /* MAX77705 exposes several I2C slave addresses. 0x66 is the PMIC block (its
  * register 0 only returns the PMIC ID 0x15), the charger block answers at
  * 0x69 (Samsung: I2C_ADDR_CHG = 0xD2 >> 1) and the fuel gauge at 0x36.
