@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Check the nearest-neighbour 4:3 and 2:1 scanout bridges.
 
-The compositor renders at 1080x2280 and B2LFramebuffer upscales into the
-1440x3040 panel. These host checks pin the pixel mapping and the bounds
-gates; hardware timing is measured separately.
+The compositor renders at 720x1520 (and previously 1080x2280) and
+B2LFramebuffer upscales into the 1440x3040 panel. These host checks pin the
+pixel mapping and the bounds gates; hardware timing is measured separately.
 """
 from pathlib import Path
 import subprocess, tempfile
@@ -47,6 +47,15 @@ int main()
     for (unsigned y = 0; y < 4; ++y)
         for (unsigned x = 0; x < 4; ++x)
             assert(d2[y * 6 + x] == e2[y][x]);
+
+    /* 2:1 maps render coordinates by doubling them; a 1x1 source at (1,1)
+     * with a 1x1 destination rect at (1,1) becomes a 2x2 panel block. */
+    memset(d2, 0xee, sizeof d2);
+    assert(b2l_blit_21(d2, sizeof d2, 6, 6, 6 * 4, s2, sizeof s2, 2, 2, 2 * 4, 0,
+        1, 1, 1, 1, 1, 1));
+    assert(d2[2 * 6 + 2] == 4 && d2[2 * 6 + 3] == 4);
+    assert(d2[3 * 6 + 2] == 4 && d2[3 * 6 + 3] == 4);
+    assert(d2[1 * 6 + 1] == 0xeeeeeeeeu);
 
     /* Offsets are respected and out-of-bounds sources must be rejected. */
     memset(dst, 0xee, sizeof dst);

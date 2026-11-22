@@ -137,11 +137,12 @@ AppleCLCD::start(IOService *provider)
 		IOLog("B2L FB: no boot framebuffer\n");
 		return false;
 	}
-	/* The compositor renders at 3/4 linear resolution (1080x2280 on the S10+
-	 * panel) and the CPU bridge upscales to the fixed DECON scanout. This cuts
-	 * the software-rasterised pixel count by 56% without touching DECON. */
-	fWidth = (fPanelWidth / 4) * 3;
-	fHeight = (fPanelHeight / 4) * 3;
+	/* The compositor renders at 1/2 linear resolution (720x1520 on the S10+
+	 * panel) and the CPU bridge doubles each pixel into the fixed DECON
+	 * scanout. This cuts the software-rasterised pixel count by 75% without
+	 * touching DECON. */
+	fWidth = fPanelWidth / 2;
+	fHeight = fPanelHeight / 2;
 	fRowBytes = (fWidth * 4 + 63) & ~63U;   /* IOSurface row alignment */
 	fLock = IOLockAlloc();
 	fClients = OSArray::withCapacity(4);
