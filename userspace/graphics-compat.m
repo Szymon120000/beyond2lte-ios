@@ -47,10 +47,12 @@ static CGContextRef bitmapSimple(void *data,size_t w,size_t h,size_t bits,size_t
  * so substitute that provider. SpringBoard carries its own STUIStatusBar*
  * subclasses which override the lookup; swizzling only UIKit's _UI copies
  * leaves SpringBoard unaffected, so patch every class that implements the
- * selector itself. */
-typedef Class (*B2LProviderIMP)(id,SEL,id,id);
-static struct {Class cls;B2LProviderIMP original;} b2l_providers[8];
-static unsigned b2l_provider_count;
+ * selector itself.
+ *
+ * The substitution never calls the replaced implementation. A subclass that
+ * forwards the class method with [super ...] keeps the original receiver, so
+ * chaining through a per-receiver table could re-enter this function forever;
+ * the panel is always the same 360 pt profile, so answer it directly. */
 static Class b2l_status_bar_class(Class from) {
     BOOL springboard=strncmp(class_getName(from),"STUI",4)==0;
     Class replacement=springboard?(Class)objc_getClass("STUIStatusBarVisualProvider_Split1080")
@@ -60,17 +62,12 @@ static Class b2l_status_bar_class(Class from) {
     return replacement;
 }
 static Class b2l_status_bar_provider(id self,SEL _cmd,id screen,id info) {
-    Class cls=(Class)self;
-    B2LProviderIMP original=NULL;
-    for(unsigned i=0;i<b2l_provider_count;i++)if(b2l_providers[i].cls==cls)original=b2l_providers[i].original;
-    Class provider=original!=NULL?(Class)original(self,_cmd,screen,info):Nil;
-    const char *name=provider!=Nil?class_getName(provider):"";
-    /* 1080 px @3x is the 360 pt profile, which is exactly this panel's logical
-     * width, so keep it if the lookup already found it. */
-    if(provider!=Nil&&strstr(name,"Split1080")!=NULL)return provider;
-    Class replacement=b2l_status_bar_class(cls);
-    if(replacement!=Nil&&replacement!=provider)NSLog(@"B2L SB: +[%s] provider %s -> %s",class_getName(cls),name,class_getName(replacement));
-    return replacement!=Nil?replacement:provider;
+    (void)_cmd;(void)screen;(void)info;
+    static unsigned calls;
+    Class replacement=b2l_status_bar_class((Class)self);
+    if(replacement!=Nil&&__atomic_fetch_add(&calls,1,__ATOMIC_RELAXED)<8)
+        NSLog(@"B2L SB: +[%s] status bar provider -> %s",class_getName((Class)self),class_getName(replacement));
+    return replacement;
 }
 static void install_status_bar_provider(void) {
     static const char *names[]={"STUIStatusBarVisualProvider_Split","STUIStatusBarVisualProvider_Phone",
@@ -86,12 +83,8 @@ static void install_status_bar_provider(void) {
         for(unsigned i=0;i<count;i++)if(method_getName(methods[i])==selector)direct=1;
         free(methods);
         Method method=direct?class_getClassMethod(cls,selector):NULL;
-        if(method==NULL||b2l_provider_count>=sizeof(b2l_providers)/sizeof(b2l_providers[0]))continue;
-        IMP current=method_getImplementation(method);
-        if(current==(IMP)b2l_status_bar_provider)continue;
-        b2l_providers[b2l_provider_count].cls=cls;
-        b2l_providers[b2l_provider_count].original=(B2LProviderIMP)current;
-        b2l_provider_count++;
+        if(method==NULL)continue;
+        if(method_getImplementation(method)==(IMP)b2l_status_bar_provider)continue;
         method_setImplementation(method,(IMP)b2l_status_bar_provider);
         NSLog(@"B2L SB: status bar provider override installed on %s",names[n]);
     }
