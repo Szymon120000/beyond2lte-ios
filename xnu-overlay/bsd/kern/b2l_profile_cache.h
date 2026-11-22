@@ -1,11 +1,13 @@
 /* SPDX-License-Identifier: BSD-2-Clause
  * One-time profile transition before launchd starts. Native MobileGestalt
  * recreates its cache; an exclusive rename keeps the complete old inode.
+ * The backup version is part of the contract: bumping it is how a changed
+ * device-tree profile (for example display-scale) is applied once more.
  */
 static int b2l_profile_cache_refresh(vfs_context_t ctx)
 {
     static const char oldpath[]="/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist";
-    static const char backup[]="/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.b2l-before-profile-v2.plist";
+    static const char backup[]="/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.b2l-before-profile-v3.plist";
     vnode_t saved=NULL;int error=vnode_lookup(backup,VNODE_LOOKUP_NOFOLLOW_ANY,&saved,ctx);
     if(!error){int valid=root_type(saved,VREG);vnode_put(saved);return valid?0:EINVAL;}
     if(error!=ENOENT)return error;
