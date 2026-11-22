@@ -84,7 +84,10 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
     if(c->ram_count)prop(&w,&chosen,"b2l,owned-ram-v1",c->ram,c->ram_count*sizeof(c->ram[0]));
     prop(&w, &chosen, "debug-enabled", &one, 4);
     text_prop(&w, &chosen, "crypto-hash-method", "sha2-384");
-    b2l_u32 display_scale = 3;
+    /* The panel is scanned out at 1440x3040, but the compositor renders
+     * 720x1520 and the CPU bridge doubles each pixel 2:1. UIKit must map one
+     * point to two rendered pixels so the logical layout stays 360x760 pt. */
+    b2l_u32 display_scale = 2;
     prop(&w, &chosen, "display-scale", &display_scale, 4);
     /* Development-board tuple consumed by mobileactivationd's native local
      * Hactivation path. No activation record or device identity is supplied.
@@ -129,7 +132,7 @@ int b2l_build_device_tree(void *buffer, b2l_size capacity,
      * Our BGRA CPU path is sRGB and has no Apple Metal device. Select only
      * the source profile's oldest artwork fallback, not APPLE9 assets.
      * Artwork tags do not register a GPU or advertise API availability. */
-    b2l_u32 artwork_subtype = 2868, artwork_scale = 3;
+    b2l_u32 artwork_subtype = 2868, artwork_scale = 2;
     text_prop(&w, &product, "product-description", "iPhone 16 Pro Max");
     text_prop(&w, &product, "artwork-device-idiom", "phone");
     prop(&w, &product, "artwork-device-subtype", &artwork_subtype, sizeof(artwork_subtype));

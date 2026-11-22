@@ -38,8 +38,10 @@
 #include <IOKit/IOLocks.h>
 #include <IOKit/system.h>
 #include <libkern/c++/OSArray.h>
+#include <libkern/c++/OSCollectionIterator.h>
 #include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSNumber.h>
+#include <libkern/c++/OSSymbol.h>
 #include <libkern/c++/OSString.h>
 #include <libkern/c++/OSSerialize.h>
 #include <libkern/c++/OSUnserialize.h>
@@ -326,6 +328,38 @@ b2l_row_bytes(uint32_t width, uint32_t ew, uint32_t bpe)
 {
 	uint64_t row = (uint64_t)b2l_div_up(width, ew) * bpe;
 	return (uint32_t)((row + B2L_SURFACE_ROW_ALIGN - 1) & ~(uint64_t)(B2L_SURFACE_ROW_ALIGN - 1));
+}
+
+/* Surfaces that carry more than the baseline ten keys are the ones that take
+ * the accelerated app-scene path. Logging their key names (bounded) makes a
+ * missing property visible in the boot ring without dumping values. */
+static void
+b2l_surface_log_keys(OSDictionary *props, uint32_t id)
+{
+	char names[192];
+	size_t used = 0;
+	names[0] = '\0';
+	OSCollectionIterator *it = OSCollectionIterator::withCollection(props);
+	if (it == NULL) return;
+	OSObject *entry;
+	while ((entry = it->getNextObject()) != NULL) {
+		const char *name = NULL;
+		OSSymbol *symbol = OSDynamicCast(OSSymbol, entry);
+		if (symbol != NULL) name = symbol->getCStringNoCopy();
+		else {
+			OSString *string = OSDynamicCast(OSString, entry);
+			if (string != NULL) name = string->getCStringNoCopy();
+		}
+		if (name == NULL) continue;
+		size_t length = strlen(name);
+		if (used + length + 2 >= sizeof(names)) break;
+		if (used) names[used++] = ' ';
+		memcpy(names + used, name, length);
+		used += length;
+		names[used] = '\0';
+	}
+	it->release();
+	IOLog("B2L SURF: id %u properties: %s\n", id, names);
 }
 
 /* Geometry from the creation properties (IOSurface.h keys). */
@@ -738,7 +772,15 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
 			bzero(mem->getBytesNoCopy(), s->allocSize);
 			s->memory = mem;
 			s->mapCache = kIOMapDefaultCache;
+			/* Clients trust the property dictionary returned with the surface.
+			 * Our storage is always linear, so never echo a tiled (or otherwise
+			 * non-linear) flag back: a renderer that trusts the flag hands these
+			 * pages to the GPU as tiled memory and faults. */
 			OSDictionary *initial = OSDictionary::withDictionary(props);
+			if (initial != NULL && initial->getObject("IOSurfaceIsTiled") != NULL) {
+				initial->removeObject("IOSurfaceIsTiled");
+				b2l_diag_record("B2L SURF: id %u linear layout forced\n", s->id);
+			}
 			OSSerialize *serialized = initial ? OSSerialize::binaryWithCapacity(256) : NULL;
 			if (serialized && initial->serialize(serialized) &&
 			    serialized->getLength() <= B2L_SURFACE_MAX_PROPS) {
@@ -763,6 +805,8 @@ IOSurfaceRootUserClient::create(IOExternalMethodArguments *args)
 		IOLog("B2L SURF: %s create id %u %ux%u fmt 0x%x bpe %u bpr %u planes %u size %u keys %u -> 0x%x\n",
 		    name, s->id, s->width, s->height, s->pixelFormat, s->bytesPerElement,
 		    s->bytesPerRow, s->planeCount, s->allocSize, props->getCount(), ret);
+		if (props->getCount() > 10 && b2l_surface_creates_logged <= 64)
+			b2l_surface_log_keys(props, s->id);
 	}
 	props->release();
 	if (ret != kIOReturnSuccess) {

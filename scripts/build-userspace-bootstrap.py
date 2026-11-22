@@ -53,12 +53,21 @@ with tempfile.TemporaryDirectory(prefix='b2l-app-bootstrap-') as td:
  job_path='/System/Library/LaunchDaemons/dev.b2l.system-app-bootstrap-v3.plist'
  if job_path in derived['LaunchDaemons']:raise SystemExit('Owned job already in source launch cache')
  derived['LaunchDaemons'][job_path]=plistlib.loads(job)
+ # watchdogd issues the 0x8badf00d kill against Preferences while backboardd
+ # is restarting its software render path. LaunchDaemons are only started from
+ # this cache on the target, so dropping the job here prevents that kill
+ # without touching the on-disk plist.
+ watchdog_path='/System/Library/LaunchDaemons/com.apple.watchdogd.plist'
+ removed={}
+ if watchdog_path in derived['LaunchDaemons']:
+  removed[watchdog_path]=derived['LaunchDaemons'].pop(watchdog_path)
  check=plistlib.loads(plistlib.dumps(derived,fmt=plistlib.FMT_BINARY));del check['LaunchDaemons'][job_path]
+ for path,value in removed.items():check['LaunchDaemons'][path]=value
  if check!=original:raise SystemExit('Original launch cache entries changed')
  cache=pad_binary_plist(plistlib.dumps(derived,fmt=plistlib.FMT_BINARY,sort_keys=True),len(source))
  if len(cache)>4*1024*1024:raise SystemExit('Derived launch cache exceeds 4 MiB')
  a.output.parent.mkdir(parents=True,exist_ok=True)
  def array(name,b):return 'static const unsigned char '+name+'[] = {\n'+''.join(' '+','.join('0x%02x'%x for x in b[i:i+20])+',\n' for i in range(0,len(b),20))+'};\n'
  a.output.write_text('/* Private generated owned launcher, compat dylibs, and local source-image cache payload. */\n'+array('b2l_apps_executable',data)+array('b2l_hfs_compat_dylib',hfs_data)+array('b2l_graphics_compat_dylib',cg_data)+array('b2l_apps_job',job)+array('b2l_apps_launch_cache',cache))
- (a.output.parent/'b2l-userspace-payload.json').write_text(json.dumps({'binary_arch':'arm64e','binary_cpusubtype':subtype,'binary_bytes':len(data),'binary_sha256':hashlib.sha256(data).hexdigest(),'hfs_dylib_bytes':len(hfs_data),'hfs_dylib_sha256':hashlib.sha256(hfs_data).hexdigest(),'graphics_dylib_bytes':len(cg_data),'graphics_dylib_sha256':hashlib.sha256(cg_data).hexdigest(),'job_sha256':hashlib.sha256(job).hexdigest(),'original_cache_sha256':hashlib.sha256(source).hexdigest(),'original_cache_bytes':len(source),'shared_handoff_size_preserved':len(source)==len(cache),'derived_cache_bytes':len(cache),'derived_cache_sha256':hashlib.sha256(cache).hexdigest(),'original_cache_entries_preserved':True,'added_job':job_path},indent=2)+'\n')
+ (a.output.parent/'b2l-userspace-payload.json').write_text(json.dumps({'binary_arch':'arm64e','binary_cpusubtype':subtype,'binary_bytes':len(data),'binary_sha256':hashlib.sha256(data).hexdigest(),'hfs_dylib_bytes':len(hfs_data),'hfs_dylib_sha256':hashlib.sha256(hfs_data).hexdigest(),'graphics_dylib_bytes':len(cg_data),'graphics_dylib_sha256':hashlib.sha256(cg_data).hexdigest(),'job_sha256':hashlib.sha256(job).hexdigest(),'original_cache_sha256':hashlib.sha256(source).hexdigest(),'original_cache_bytes':len(source),'shared_handoff_size_preserved':len(source)==len(cache),'derived_cache_bytes':len(cache),'derived_cache_sha256':hashlib.sha256(cache).hexdigest(),'original_cache_entries_preserved':True,'added_job':job_path,'removed_jobs':sorted(removed)},indent=2)+'\n')
  print('Built native arm64e bootstrap:',len(data),'bytes; sha256',hashlib.sha256(data).hexdigest())

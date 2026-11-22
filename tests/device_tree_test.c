@@ -34,7 +34,7 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         }
         if (!strcmp(name,"b2l,touch-status")) { assert(len==24*8 && read64(buf+off)==1 && read64(buf+off+8)==0x123); }
         if (!strcmp(name,"crypto-hash-method")) assert(len==9 && !memcmp(buf+off,"sha2-384",9));
-        if (!strcmp(name,"display-scale")) assert(len==4 && read32(buf+off)==3);
+        if (!strcmp(name,"display-scale")) assert(len==4 && read32(buf+off)==2);
         if (!strcmp(name,"sleep-disabled")) {
             ++sleep_disabled_properties;
             assert(depth==1 && node_name && !strcmp(node_name,"defaults"));
@@ -81,7 +81,7 @@ static size_t decode(const unsigned char *buf, size_t size, size_t off,
         if (!strcmp(name,"product-description")) assert(depth==1 && node_name && !strcmp(node_name,"product") && len==sizeof("iPhone 16 Pro Max") && !memcmp(buf+off,"iPhone 16 Pro Max",len));
         if (!strcmp(name,"artwork-device-idiom")) assert(len==sizeof("phone") && !memcmp(buf+off,"phone",len));
         if (!strcmp(name,"artwork-device-subtype")) assert(len==4 && read32(buf+off)==2868);
-        if (!strcmp(name,"artwork-scale-factor")) assert(len==4 && read32(buf+off)==3);
+        if (!strcmp(name,"artwork-scale-factor")) assert(len==4 && read32(buf+off)==2);
         if (!strcmp(name,"artwork-display-gamut")) assert(len==sizeof("sRGB") && !memcmp(buf+off,"sRGB",len));
         if (!strcmp(name,"graphics-featureset-class") || !strcmp(name,"graphics-featureset-fallbacks")) assert(len==sizeof("GLES2,0") && !memcmp(buf+off,"GLES2,0",len));
         if (!strcmp(name,"target-type")) { ++target_type_properties; assert(depth==0 && len==sizeof("D94") && !memcmp(buf+off,"D94",len)); }

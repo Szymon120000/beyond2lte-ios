@@ -8,6 +8,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <sys/file.h>
+#include <sys/stat.h>
 #include <string.h>
 
 static BOOL bootOption(const char *args,const char *option) {
@@ -39,6 +40,37 @@ static NSUInteger installedCount(void) {
     }
     return count;
 }
+// The iOS 26 Control Center gallery is seeded from this plain plist rather
+// than the legacy per-module preferences. The shipped seed only lists six
+// modules, so the Appearance (light/dark) control never appears. Add it once,
+// keeping every existing entry and clearing a stale disable. The file belongs
+// to mobile; this helper runs as root before user apps start.
+static void ensureAppearanceModule(void) {
+    NSString *path=@"/private/var/mobile/Library/ControlCenter/ModuleConfiguration.plist";
+    NSString *identifier=@"com.apple.control-center.AppearanceModule";
+    NSDictionary *existing=[NSDictionary dictionaryWithContentsOfFile:path];
+    NSMutableDictionary *config=existing?[existing mutableCopy]:[NSMutableDictionary dictionary];
+    NSArray *identifiers=[config[@"module-identifiers"] isKindOfClass:NSArray.class]?config[@"module-identifiers"]:@[];
+    NSArray *disabled=[config[@"disabled-module-identifiers"] isKindOfClass:NSArray.class]?config[@"disabled-module-identifiers"]:@[];
+    BOOL listed=[identifiers containsObject:identifier];
+    BOOL blocked=[disabled containsObject:identifier];
+    if(listed && !blocked)return;
+    NSMutableArray *next=[identifiers mutableCopy];
+    if(!listed)[next addObject:identifier];
+    config[@"module-identifiers"]=next;
+    if(blocked){NSMutableArray *allowed=[disabled mutableCopy];[allowed removeObject:identifier];config[@"disabled-module-identifiers"]=allowed;}
+    if(!config[@"version"])config[@"version"]=@3;
+    if(!config[@"userenabled-fixed-module-identifiers"])config[@"userenabled-fixed-module-identifiers"]=@[];
+    NSFileManager *fm=NSFileManager.defaultManager;
+    if(![fm createDirectoryAtPath:[path stringByDeletingLastPathComponent] withIntermediateDirectories:YES attributes:nil error:NULL] ||
+       ![config writeToFile:path atomically:YES]) {
+        NSLog(@"B2L APPS: cannot publish Control Center Appearance configuration");
+        return;
+    }
+    if(chown(path.fileSystemRepresentation,501,501) || chmod(path.fileSystemRepresentation,0644))
+        NSLog(@"B2L APPS: Control Center configuration ownership not set");
+    NSLog(@"B2L APPS: Appearance control exposed in Control Center (listed=%d blocked=%d)",(int)listed,(int)blocked);
+}
 int main(void) {
  @autoreleasepool {
     char args[4096]={0};size_t argsLength=sizeof(args);
@@ -52,6 +84,7 @@ int main(void) {
     if(getuid()!=0 || sysctlbyname("hw.machine",model,&length,NULL,0) || strcmp(model,"iPhone17,2") || !([build isEqual:@"23G90"] || [build isEqual:@"25F71"])) {
         NSLog(@"B2L APPS: unsupported owner/model/build; native migration not invoked");return 64;
     }
+    ensureAppearanceModule();
     // Serialize accidental duplicate launches without blocking another startup.
     int lock=open("/private/var/run/b2l-system-app-bootstrap-v1.lock",O_RDWR|O_CREAT|O_NOFOLLOW,0600);
     if(lock<0 || flock(lock,LOCK_EX|LOCK_NB))return 65;
