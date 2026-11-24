@@ -37,7 +37,9 @@ hangs.
    external abort on this SoC, not a catchable bus error.
 2. **All GPU/JOB/MMU interrupt sources are masked before the job manager is
    touched.** No handler is installed for SPI 319/320/321 yet, so the code
-   only polls raw status bits and never lets the interrupt line assert.
+   only polls raw status bits and never lets the interrupt line assert. The
+   masks are written again after the soft reset, because a reset returns those
+   registers to their defaults.
 3. **The job test owns a private address space and its own pages.** It cannot
    disturb the scanout buffers or the CPU presentation path, and every page it
    touches is mapped uncached, so there is no cache maintenance to get wrong.
@@ -64,6 +66,22 @@ aliases, so `B2LGPU` asks for **non-cacheable page-table walks**
 (`AS_TRANSCFG_LO = 0x01000006`) and for the job chain itself uses the
 non-cacheable `AS_MEMATTR` lane (index 5, byte `0x4c`). Both values are pinned
 by `tests/gpu_wire_test.c`.
+
+### Ordering that is not optional
+
+Two sequences were copied from kbase rather than invented, because the
+hardware does not accept them in any order:
+
+* **Power-up.** The tiler is requested first because that also powers L2
+  slice 0; only then are extra L2 slices, the core stacks and finally the
+  shader cores requested, waiting for each group's `READY` bit in turn
+  (`kbase_pm_l2_update_state`, `kbase_pm_shaders_update_state`). Shader cores
+  requested before their parent groups can stay not-ready forever.
+* **Job submission.** `JS_HEAD_NEXT_LO/HI`, then `JS_AFFINITY_NEXT_LO/HI`,
+  then `JS_CONFIG_NEXT`, then `JS_COMMAND_NEXT = START`, the same order as
+  `kbase_job_hw_submit`. `JS_CONFIG_NEXT` bits 3:0 carry the address space
+  number (0 here), bits 10:8 and 14:12 clean and invalidate the L2 at the
+  start and end of the job, and bits 19:16 hold thread priority 8.
 
 ### Registers used
 
