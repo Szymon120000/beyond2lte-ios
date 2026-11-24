@@ -107,6 +107,7 @@ enum {
 	B2L_GPU_JS_HEAD_NEXT_LO = 0x40,
 	B2L_GPU_JS_HEAD_NEXT_HI = 0x44,
 	B2L_GPU_JS_AFFIN_NEXT   = 0x50,
+	B2L_GPU_JS_AFFIN_NEXT_HI = 0x54,
 	B2L_GPU_JS_CONFIG_NEXT  = 0x58,
 	B2L_GPU_JS_XAFFIN_NEXT  = 0x5C,
 	B2L_GPU_JS_COMMAND_NEXT = 0x60,
@@ -448,6 +449,10 @@ B2LGPU::bringUp()
 	fResetOk = true;
 	publish("gpu-reset", 1);
 	b2l_diag_record("B2L GPU: soft reset completed\n");
+	/* A soft reset returns the interrupt mask registers to their default
+	 * state, so mask every source again before power-up can raise one. No
+	 * handler exists for SPI 319/320/321. */
+	maskInterrupts();
 
 	shaderPresent = r(B2L_GPU_REG_SHADER_PRESENT);
 	tilerPresent = r(B2L_GPU_REG_TILER_PRESENT);
@@ -596,12 +601,15 @@ B2LGPU::probeJob()
 		affinity = 1;
 	}
 	rawBefore = r(B2L_GPU_REG_JOB_RAWSTAT);
+	/* Same order as kbase_job_hw_submit: head first, then affinity, then
+	 * the per-slot configuration, and the command last. */
+	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_LO, (uint32_t)jobVa);
+	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_HI, (uint32_t)(jobVa >> 32));
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_AFFIN_NEXT, affinity);
+	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_AFFIN_NEXT_HI, 0);
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_CONFIG_NEXT,
 	    B2L_GPU_JS_CONFIG_AS(0) | B2L_GPU_JS_CONFIG_FLUSH_START |
 	    B2L_GPU_JS_CONFIG_FLUSH_END | B2L_GPU_JS_CONFIG_THREAD_PRI);
-	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_LO, (uint32_t)jobVa);
-	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_HI, (uint32_t)(jobVa >> 32));
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_COMMAND_NEXT, B2L_GPU_JS_COMMAND_START);
 
 	/* Any change in the raw job status is the completion edge. */
