@@ -111,12 +111,27 @@ int b2l_log_writer_open(struct b2l_log_writer*w,const struct b2l_log_sink*s)
 {
     if(!w||!s||!s->read||!s->write||!s->sync||s->region_bytes!=B2L_LOG_REGION_BYTES)return B2L_LOG_BAD_ARGUMENT;
     w->active=0;w->sink=*s;w->cursor=0;w->record_index=0;w->overwritten=0;
-    uint64_t epoch[2]={0,0};int valid[2]={0,0};
+    uint64_t epoch[2]={0,0};int valid[2]={0,0};int readable=1;
     for(unsigned i=0;i<2;i++){
         int err=s->read(s->context,(uint64_t)i*B2L_LOG_PAGE_BYTES,w->page,B2L_LOG_PAGE_BYTES);
+        if(err)readable=0;
         if(!err&&!b2l_log_parse_header(w->page,&epoch[i]))valid[i]=1;
     }
-    if(!valid[0]&&!valid[1])return B2L_LOG_INVALID_HEADER;
+    if(!valid[0]&&!valid[1]){
+        /* This sink names the validated auxiliary region and nothing else, so
+         * a region with unreadable headers is ours to re-provision. The old
+         * geometry was one page shorter; a build that expects the current
+         * geometry used to reject that region and stay silent for the whole
+         * uptime. Only a failed read keeps the old behaviour. */
+        if(!readable)return B2L_LOG_INVALID_HEADER;
+        w->epoch=1;b2l_log_make_header(w->page,w->epoch);
+        for(unsigned i=0;i<2;i++){
+            int err=s->write(s->context,(uint64_t)i*B2L_LOG_PAGE_BYTES,w->page,B2L_LOG_PAGE_BYTES);
+            if(err)return err;
+        }
+        int err=s->sync(s->context);if(err)return err;
+        w->active=1;return 0;
+    }
     unsigned chosen=valid[1]&&(!valid[0]||epoch[1]>epoch[0])?1:0;
     if(epoch[chosen]==UINT64_MAX)return B2L_LOG_EXHAUSTED;
     w->epoch=epoch[chosen]+1;b2l_log_make_header(w->page,w->epoch);

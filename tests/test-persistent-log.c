@@ -55,10 +55,18 @@ int main(int argc,char**argv){
  b2l_log_ring_append_bytes(&concurrent,&byte,4097);assert(concurrent.next==bulkEnd);
  concurrent.next=B2L_LOG_SEQUENCE_LIMIT-2;b2l_log_ring_append_bytes(&concurrent,"abcd",4);assert(concurrent.next==B2L_LOG_SEQUENCE_LIMIT-2);
  struct disk d={0};d.data=calloc(1,B2L_LOG_REGION_BYTES);assert(d.data);
- struct b2l_log_sink sink={rd,wr,sy,&d,B2L_LOG_REGION_BYTES};struct b2l_log_writer w={0};
- assert(b2l_log_writer_open(&w,&sink)==B2L_LOG_INVALID_HEADER&&!d.writes);
+ struct b2l_log_sink sink={rd,wr,sy,&d,B2L_LOG_REGION_BYTES};struct b2l_log_writer w={0};uint64_t epoch=0;
+ /* A blank region is ours: provision it instead of staying silent forever. */
+ assert(!b2l_log_writer_open(&w,&sink)&&w.epoch==1&&d.writes==2&&d.syncs==1);
+ assert(!b2l_log_parse_header(d.data,&epoch)&&epoch==1);
+ assert(!b2l_log_parse_header(d.data+4096,&epoch)&&epoch==1);
+ /* An unreadable region must not be overwritten. */
+ memset(d.data,0,B2L_LOG_REGION_BYTES);d.failread=d.reads+1;
+ struct b2l_log_writer failed={0};unsigned writes_before=d.writes;
+ assert(b2l_log_writer_open(&failed,&sink)==B2L_LOG_INVALID_HEADER&&d.writes==writes_before);
+ d.failread=0;d.writes=0;d.syncs=0;
  b2l_log_make_header(d.data,4);b2l_log_make_header(d.data+4096,7);
- uint64_t epoch=0;assert(!b2l_log_parse_header(d.data,&epoch)&&epoch==4);
+ assert(!b2l_log_parse_header(d.data,&epoch)&&epoch==4);
  for(unsigned i=0;i<4096;i+=37){d.data[i]^=1;assert(b2l_log_parse_header(d.data,&epoch));d.data[i]^=1;}
  sink.region_bytes--;assert(b2l_log_writer_open(&w,&sink)==B2L_LOG_BAD_ARGUMENT&&!d.writes);sink.region_bytes++;
  assert(!b2l_log_writer_open(&w,&sink)&&w.epoch==8&&d.writes==1&&d.syncs==1);

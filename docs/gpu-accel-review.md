@@ -17,7 +17,10 @@ asks otherwise:
 | :--- | :--- |
 | `b2l_gpu_probe=0` (default) | no MMIO of any kind |
 | `b2l_gpu_probe=1` | read-only: PMU G3D status, `GPU_ID`, feature/readiness/present masks |
-| `b2l_gpu_probe=2` | additionally request `pd-embedded_g3d` through the PMU, soft-reset, power up the core groups, program address space 0 and run a write-value job chain on slot 0; the GPU zeroes one dword of a private page and the CPU verifies it |
+| `b2l_gpu_probe=2` | ask the PMU for `pd-embedded_g3d` and report the resulting status; stops before any GPU register is touched |
+| `b2l_gpu_probe=3` | additionally map and read the GPU registers |
+| `b2l_gpu_probe=4` | additionally soft-reset and power up the core groups |
+| `b2l_gpu_probe=5` | additionally run the write-value chain: the GPU zeroes one dword of a private page and the CPU verifies it |
 
 Level 1 writes no register at all, so a device whose G3D domain is already
 powered can be inspected without changing state.
@@ -117,6 +120,13 @@ A boot-arg kernel probe is therefore the honest first milestone: it answers
 whether the domain can be brought up and whether the job manager and MMU work
 on this port at all, with the answer in the persistent log.
 
+The levels are split so a boot that wedges still identifies the step that did
+it, and every level mirrors its key values through `IOLog` to the panel console.
+The persistent console also re-provisions a region whose headers no longer
+match the current geometry instead of silently disabling logging for the whole
+boot; the previous build had left the on-disk region one page shorter and no
+probe output survived.
+
 The write-value job added after the NULL job is the next rung: it is still not
 a pixel, but it is the GPU moving data. The CPU fills one dword of a private
 page with `0xdeadbeef`, the GPU overwrites it with zero through a second MMU
@@ -129,18 +139,20 @@ must use to signal scanout.
 ## Expected log lines (not yet observed on hardware)
 
 ```
-B2L GPU: probe level 2 requested
+B2L GPU: service start, probe level 5
+B2L GPU: probe level 5 requested
 B2L GPU: PMU G3D_STATUS=0x........ powered=?
+B2L GPU: after PMU request G3D_STATUS=0x........
 B2L GPU: ID=0x........ arch=7.0 product=1 version=...
-B2L GPU: model=tNOx(Bifrost) corefeat=... mmufeatures=...
-B2L GPU: soft reset completed
-B2L GPU: ready shader=... tiler=... l2=... stack=...
+B2L GPU: present shader=... tiler=... l2=... stack=... ready shader=... tiler=... l2=...
+B2L GPU: soft reset begin
+B2L GPU: powered shader=... tiler=... l2=... stack=...
 B2L GPU: page tables l0..l3=... map va=0x20000000 -> pa=..., va=0x20001000 -> pa=...
 B2L GPU: address space 0 updated, faultstatus=0x00000000
 B2L GPU: job chain rawstat 0x00000000 -> 0x00000001 js_status=0x00000000 ...
-B2L GPU: write-value job 1 retired, ... target=0x00000000 (sentinel was 0xdeadbeef)
+B2L GPU: job 1 retired target=0x00000000 (sentinel deadbeef)
 B2L GPU: GPU wrote memory through address space 0 (2 write-value jobs)
-B2L GPU SUMMARY: why=timer level=2 ... mem_write=1 mem_value=0x00000000 ...
+B2L GPU SUMMARY: why=timer level=5 ... mem_write=1 mem_value=0x00000000 ...
 ```
 
 A fault prints `gpu_faultstatus`, `gpu_faultaddr`, `js_status` and the AS fault

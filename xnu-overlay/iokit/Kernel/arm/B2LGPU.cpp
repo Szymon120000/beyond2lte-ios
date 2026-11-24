@@ -7,11 +7,17 @@
  *   b2l_gpu_probe=0   (default) no MMIO at all
  *   b2l_gpu_probe=1   read-only: PMU power state, GPU_ID, feature and
  *                     readiness masks. No register write of any kind.
- *   b2l_gpu_probe=2   additionally try to ungate pd-embedded_g3d through the
- *                     PMU, soft-reset, power up the core groups and run a
- *                     write-value job chain through address space 0 and job
- *                     slot 0. The GPU writes one dword of its own data page
- *                     and the CPU verifies the write.
+ *   b2l_gpu_probe=2   additionally ask the PMU for pd-embedded_g3d and report
+ *                     the resulting status. Still no GPU MMIO write; stops
+ *                     before the block is touched so the step is separable.
+ *   b2l_gpu_probe=3   additionally map and read the GPU registers once the
+ *                     domain is powered.
+ *   b2l_gpu_probe=4   additionally soft-reset and power up the core groups.
+ *   b2l_gpu_probe=5   additionally run the write-value job chain and verify
+ *                     that the GPU wrote its private data page.
+ *
+ * Every level also prints its key values through IOLog, so a boot that wedges
+ * on a GPU register still shows the last completed step on the panel.
  *
  * Safety rules, all deliberate:
  *
@@ -358,6 +364,7 @@ B2LGPU::init(OSDictionary *dictionary)
 	fJobs = 0;
 	memset(fTable, 0, sizeof(fTable));
 	memset(&fJob, 0, sizeof(fJob));
+	memset(&fData, 0, sizeof(fData));
 	return true;
 }
 
@@ -435,6 +442,8 @@ B2LGPU::probePower()
 	fPmuStatus = status;
 	b2l_diag_record("B2L GPU: PMU G3D_STATUS=0x%08x powered=%u\n",
 	    status, (status & B2L_PMU_G3D_POWERED) ? 1u : 0u);
+	IOLog("B2L GPU: PMU G3D_STATUS=0x%08x powered=%u\n",
+	    status, (status & B2L_PMU_G3D_POWERED) ? 1u : 0u);
 	if (status & B2L_PMU_G3D_POWERED) {
 		fPowered = true;
 		return true;
@@ -455,6 +464,7 @@ B2LGPU::probePower()
 		IODelay(1);
 	}
 	b2l_diag_record("B2L GPU: after PMU request G3D_STATUS=0x%08x\n", status);
+	IOLog("B2L GPU: after PMU request G3D_STATUS=0x%08x\n", status);
 	fPmuStatus = status;
 	fPowered = (status & B2L_PMU_G3D_POWERED) != 0;
 	if (!fPowered) {
@@ -491,6 +501,10 @@ B2LGPU::dumpRegisters()
 	    "status=%u\n", id, B2L_GPU_ID_ARCH_MAJOR(id), B2L_GPU_ID_ARCH_MINOR(id),
 	    B2L_GPU_ID_PRODUCT_MAJOR(id), B2L_GPU_ID_VERSION_MAJOR(id),
 	    B2L_GPU_ID_VERSION_MINOR(id), B2L_GPU_ID_VERSION_STATUS(id));
+	IOLog("B2L GPU: ID=0x%08x arch=%u.%u product=%u version=%u.%u\n", id,
+	    B2L_GPU_ID_ARCH_MAJOR(id), B2L_GPU_ID_ARCH_MINOR(id),
+	    B2L_GPU_ID_PRODUCT_MAJOR(id), B2L_GPU_ID_VERSION_MAJOR(id),
+	    B2L_GPU_ID_VERSION_MINOR(id));
 	b2l_diag_record("B2L GPU: model=%s corefeat=0x%08x l2feat=0x%08x "
 	    "memfeat=0x%08x mmufeatures=0x%08x as_present=0x%04x js_present=0x%04x\n",
 	    (B2L_GPU_ID_ARCH_MAJOR(id) == 7 &&
@@ -506,6 +520,11 @@ B2LGPU::dumpRegisters()
 	    r(B2L_GPU_REG_SHADER_READY), r(B2L_GPU_REG_TILER_READY),
 	    r(B2L_GPU_REG_L2_READY), r(B2L_GPU_REG_STATUS),
 	    r(B2L_GPU_REG_IRQ_RAWSTAT));
+	IOLog("B2L GPU: present shader=0x%x tiler=0x%x l2=0x%x stack=0x%x "
+	    "ready shader=0x%x tiler=0x%x l2=0x%x\n",
+	    shaderPresent, tilerPresent, l2Present, stackPresent,
+	    r(B2L_GPU_REG_SHADER_READY), r(B2L_GPU_REG_TILER_READY),
+	    r(B2L_GPU_REG_L2_READY));
 
 	fProcessorsUp = shaderPresent != 0 &&
 	    (r(B2L_GPU_REG_SHADER_READY) & shaderPresent) == shaderPresent &&
@@ -537,6 +556,7 @@ B2LGPU::bringUp()
 	uint32_t shaderPresent, tilerPresent, l2Present, stackPresent;
 
 	maskInterrupts();
+	IOLog("B2L GPU: soft reset begin\n");
 	w(B2L_GPU_REG_COMMAND, B2L_GPU_COMMAND_SOFT_RESET);
 	if (!pollReg(B2L_GPU_REG_IRQ_RAWSTAT, B2L_GPU_IRQ_RESET_COMPLETED,
 	    B2L_GPU_IRQ_RESET_COMPLETED, 10000)) {
@@ -596,6 +616,9 @@ B2LGPU::bringUp()
 	    "stack=0x%08x\n", r(B2L_GPU_REG_SHADER_READY),
 	    r(B2L_GPU_REG_TILER_READY), r(B2L_GPU_REG_L2_READY),
 	    r(B2L_GPU_REG_STACK_READY));
+	IOLog("B2L GPU: powered shader=0x%x tiler=0x%x l2=0x%x stack=0x%x\n",
+	    r(B2L_GPU_REG_SHADER_READY), r(B2L_GPU_REG_TILER_READY),
+	    r(B2L_GPU_REG_L2_READY), r(B2L_GPU_REG_STACK_READY));
 	fProcessorsUp = shaderPresent != 0 &&
 	    (r(B2L_GPU_REG_SHADER_READY) & shaderPresent) == shaderPresent &&
 	    (r(B2L_GPU_REG_TILER_READY) & tilerPresent) == tilerPresent &&
@@ -743,6 +766,8 @@ B2LGPU::probeJob()
 	 * plants a sentinel in the target dword; a zero read afterwards can only
 	 * have come from the GPU, because the CPU wrote the sentinel through an
 	 * uncached alias and never writes zero there itself. */
+	IOLog("B2L GPU: submitting write-value chain va=0x%llx -> 0x%llx\n",
+	    (unsigned long long)jobVa, (unsigned long long)dataVa);
 	for (unsigned attempt = 0; attempt < 2; attempt++) {
 		uint32_t raw = 0, jsStatus = 0, value;
 
@@ -765,6 +790,8 @@ B2LGPU::probeJob()
 		b2l_diag_record("B2L GPU: write-value job %u retired, "
 		    "rawstat=0x%08x js_status=0x%08x target=0x%08x "
 		    "(sentinel was 0xdeadbeef)\n", fJobs, raw, jsStatus, value);
+		IOLog("B2L GPU: job %u retired target=0x%08x (sentinel deadbeef)\n",
+		    fJobs, value);
 		if (value != 0) {
 			fMemoryWritten = false;
 			b2l_diag_record("B2L GPU: GPU did not write the target; "
@@ -853,11 +880,16 @@ B2LGPU::start(IOService *provider)
 	publish("b2l-gpu-probe-level", fLevel);
 	publish("gpu-jobs", 0);
 	registerService();
+	/* Always leave one line, even at level 0: it is the only way to tell a
+	 * service that never matched from a probe that ran and stayed silent. */
+	b2l_diag_record("B2L GPU: service start, probe level %u\n", fLevel);
+	IOLog("B2L GPU: service start, probe level %u\n", fLevel);
 	if (fLevel == 0) {
 		return true;
 	}
 
 	b2l_diag_record("B2L GPU: probe level %u requested\n", fLevel);
+	IOLog("B2L GPU: probe level %u requested\n", fLevel);
 	startTimer();
 	if (!mapRegions()) {
 		summary("map-failed");
@@ -865,6 +897,13 @@ B2LGPU::start(IOService *provider)
 	}
 	if (!probePower()) {
 		summary("powered-off");
+		return true;
+	}
+	/* Level 2 ends here on purpose: it answers whether the PMU can ungate the
+	 * domain without also asking what happens when the CPU touches a block
+	 * whose CMU clock may still be off. */
+	if (fLevel == 2) {
+		summary("ungated");
 		return true;
 	}
 
@@ -882,7 +921,7 @@ B2LGPU::start(IOService *provider)
 	fGpu = (volatile uint32_t *)fGpuMap->getVirtualAddress();
 
 	dumpRegisters();
-	if (fLevel >= 2 && bringUp()) {
+	if (fLevel >= 4 && bringUp() && fLevel >= 5) {
 		probeJob();
 	}
 	summary("probe-done");
