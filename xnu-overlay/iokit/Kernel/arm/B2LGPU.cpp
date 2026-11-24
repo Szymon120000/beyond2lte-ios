@@ -117,8 +117,8 @@ enum {
 enum {
 	B2L_GPU_AS_TRANSTAB_LO  = 0x00,
 	B2L_GPU_AS_TRANSTAB_HI  = 0x04,
-	B2L_GPU_AS_MEMATTR_LO   = 0x08,
-	B2L_GPU_AS_MEMATTR_HI   = 0x0C,
+	B2L_GPU_AS_MEMATTR_LO_REG = 0x08,
+	B2L_GPU_AS_MEMATTR_HI_REG = 0x0C,
 	B2L_GPU_AS_COMMAND      = 0x18,
 	B2L_GPU_AS_FAULTSTATUS  = 0x1C,
 	B2L_GPU_AS_FAULTADDR_LO = 0x20,
@@ -590,8 +590,10 @@ B2LGPU::probeJob()
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_TRANSCFG_LO,
 	    B2L_GPU_AS_TRANSCFG_VALUE);
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_TRANSCFG_HI, 0);
-	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_MEMATTR_LO, B2L_GPU_AS_MEMATTR_LO);
-	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_MEMATTR_HI, B2L_GPU_AS_MEMATTR_HI);
+	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_MEMATTR_LO_REG,
+	    B2L_GPU_AS_MEMATTR_LO);
+	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_MEMATTR_HI_REG,
+	    B2L_GPU_AS_MEMATTR_HI);
 	/* kbase waits for AS_STATUS_AS_ACTIVE to clear before writing a command
 	 * and polls it afterwards until the command has retired. The bit means
 	 * "command in flight", not "address space usable", so waiting for it to
