@@ -408,7 +408,7 @@ class B2LPower : public IOService {
     void kickWatchdog();
     static void tick(OSObject *owner,IOTimerEventSource *sender);
 public:
-    bool init() APPLE_KEXT_OVERRIDE;
+    bool init(OSDictionary *dictionary = nullptr) APPLE_KEXT_OVERRIDE;
     bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
     void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
     void free() APPLE_KEXT_OVERRIDE;
@@ -741,9 +741,11 @@ void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
 
 /* IOKit does not zero object storage. Every pointer and counter is set here so
  * stop()/free() never walk an uninitialised descriptor, and probe() cannot
- * dereference a stale bus base if start() fails halfway. */
-bool B2LPower::init(){
-    if(!IOService::init())return false;
+ * dereference a stale bus base if start() fails halfway. IOKit instantiates
+ * drivers by calling init(dictionary), not init(), so this is the overload
+ * that has to carry the initialisation. */
+bool B2LPower::init(OSDictionary *dictionary){
+    if(!IOService::init(dictionary))return false;
     i2cDesc=nullptr;i2cMap=nullptr;gpioDesc=nullptr;gpioMap=nullptr;
     loop=nullptr;timer=nullptr;i2c=nullptr;gpio=nullptr;
     chargerReady=false;gaugeReady=false;bitbang=false;bbSawCharger=false;
