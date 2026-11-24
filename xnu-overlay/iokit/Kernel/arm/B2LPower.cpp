@@ -35,8 +35,9 @@
 /* The upstream runtime option block (b2l_options.h) is a BSD-side feature and
  * is not present on this branch, so the power debug switch is read straight
  * from the boot arguments. pexpert.h has no extern "C" guard, so declare the
- * C symbol here instead of including the header from this C++ file. */
-extern "C" unsigned int PE_parse_boot_argn(const char*,void*,int);
+ * C symbol here. The return type must stay boolean_t (int), or this collides
+ * with the already-visible declaration instead of redeclaring it. */
+extern "C" int PE_parse_boot_argn(const char*,void*,int);
 static bool b2l_power_debug(void){
     int value=0;
     return PE_parse_boot_argn("b2l_power_dbg",&value,(int)sizeof(value))&&value==1;
@@ -407,6 +408,7 @@ class B2LPower : public IOService {
     void kickWatchdog();
     static void tick(OSObject *owner,IOTimerEventSource *sender);
 public:
+    bool init() APPLE_KEXT_OVERRIDE;
     bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
     void stop(IOService *provider) APPLE_KEXT_OVERRIDE;
     void free() APPLE_KEXT_OVERRIDE;
@@ -688,7 +690,10 @@ void B2LPower::publish(){
     if(!gaugeReady)return;
     setProperty("B2LBatterySOCPercent",(unsigned long long)(socTenths/10),32);
     setProperty("B2LBatteryVoltage_mV",(unsigned long long)vcellMv,32);
-    setProperty("B2LBatteryCurrent_mA",(long long)currentMa,32);
+    /* Signed current in 32-bit two's complement: setProperty has bool and
+     * unsigned long long overloads, so a bare long long is ambiguous. */
+    setProperty("B2LBatteryCurrent_mA",
+        (unsigned long long)(uint32_t)(int32_t)currentMa,32);
     setProperty("B2LChargerReady",chargerReady);
     setProperty("B2LGaugeReady",gaugeReady);
     if(battery){
@@ -732,6 +737,21 @@ void B2LPower::tick(OSObject *owner,IOTimerEventSource *sender){
             (s->chgIntOk&CHGIN_OK_MASK)!=0,(s->chgDetails&CHGIN_DTLS_MASK)!=0,
             s->chargerReady,s->gaugeReady);
     }
+}
+
+/* IOKit does not zero object storage. Every pointer and counter is set here so
+ * stop()/free() never walk an uninitialised descriptor, and probe() cannot
+ * dereference a stale bus base if start() fails halfway. */
+bool B2LPower::init(){
+    if(!IOService::init())return false;
+    i2cDesc=nullptr;i2cMap=nullptr;gpioDesc=nullptr;gpioMap=nullptr;
+    loop=nullptr;timer=nullptr;i2c=nullptr;gpio=nullptr;
+    chargerReady=false;gaugeReady=false;bitbang=false;bbSawCharger=false;
+    halfUs=B2L_BB_HALF_US;timeoutUS=50000;
+    transferFailures=0;ticks=0;probeAttempts=0;
+    socTenths=0;vcellMv=0;currentMa=0;tempTenths=0;
+    fgStatus=0;fgTemp=0;chgIntOk=0;chgDetails=0;battery=nullptr;
+    return true;
 }
 
 bool B2LPower::start(IOService *provider){
