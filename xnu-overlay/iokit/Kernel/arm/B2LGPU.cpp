@@ -8,8 +8,10 @@
  *   b2l_gpu_probe=1   read-only: PMU power state, GPU_ID, feature and
  *                     readiness masks. No register write of any kind.
  *   b2l_gpu_probe=2   additionally try to ungate pd-embedded_g3d through the
- *                     PMU, soft-reset, power up the core groups and run one
- *                     NULL job through address space 0 and job slot 0.
+ *                     PMU, soft-reset, power up the core groups and run a
+ *                     write-value job chain through address space 0 and job
+ *                     slot 0. The GPU writes one dword of its own data page
+ *                     and the CPU verifies the write.
  *
  * Safety rules, all deliberate:
  *
@@ -38,6 +40,8 @@
 #include <IOKit/IOLib.h>
 #include <IOKit/IOMemoryDescriptor.h>
 #include <IOKit/IOBufferMemoryDescriptor.h>
+#include <IOKit/IOWorkLoop.h>
+#include <IOKit/IOTimerEventSource.h>
 #include <libkern/c++/OSNumber.h>
 #include <arm64/b2l_diag.h>
 #include "B2LGPU.h"
@@ -167,9 +171,22 @@ class B2LGPU : public IOService {
 	volatile uint32_t  *fPmu, *fGpu;
 	unsigned            fLevel;
 	bool                fPowered, fResetOk, fProcessorsUp;
+	IOWorkLoop         *fLoop;
+	IOTimerEventSource *fTimer;
+	unsigned            fTicks;
+	uint32_t            fGpuId;
+	uint32_t            fPmuStatus;
+	uint32_t            fJobRawstat;
+	uint32_t            fJobStatus;
+	uint32_t            fAsFault;
+	bool                fAsUpdated, fJobCompleted;
+	bool                fMemoryWritten;
+	uint32_t            fMemoryValue;
+	unsigned            fJobs;
 
 	B2LGPUPage          fTable[B2L_GPU_MMU_LEVELS];
 	B2LGPUPage          fJob;
+	B2LGPUPage          fData;
 
 	uint32_t r(unsigned off) const {
 		uint32_t v = *(volatile uint32_t *)((volatile uint8_t *)fGpu + off);
@@ -197,8 +214,13 @@ class B2LGPU : public IOService {
 	void maskInterrupts(void);
 	bool bringUp(void);
 	bool probeJob(void);
+	bool runJob(uint64_t headVa, uint32_t affinity, uint32_t *rawstat,
+	    uint32_t *status);
 	void logFault(const char *what);
 	void publish(const char *key, uint64_t value);
+	void summary(const char *why);
+	static void tick(OSObject *owner, IOTimerEventSource *sender);
+	bool startTimer(void);
 
 public:
 	bool init(OSDictionary *dictionary = NULL) APPLE_KEXT_OVERRIDE;
@@ -224,6 +246,66 @@ void
 B2LGPU::publish(const char *key, uint64_t value)
 {
 	setProperty(key, (unsigned long long)value, 32);
+}
+
+/* The persistent console is a ring: a boot that logs normally for more than
+ * about half an hour overwrites its own early lines. Everything the probe
+ * learned is cached in the object and re-emitted here, so a pull taken long
+ * after boot still shows the result. This only reads cached values; it never
+ * touches the GPU or PMU, so it is safe even when the domain is gated. */
+void
+B2LGPU::summary(const char *why)
+{
+	b2l_diag_record("B2L GPU SUMMARY: why=%s level=%u powered=%d reset=%d "
+	    "as=%d processors=%d jobs=%u mem_write=%d mem_value=0x%08x "
+	    "gpu_id=0x%08x pmu=0x%08x rawstat=0x%08x js=0x%08x as_fault=0x%08x\n",
+	    why, fLevel, fPowered ? 1 : 0, fResetOk ? 1 : 0,
+	    fAsUpdated ? 1 : 0, fProcessorsUp ? 1 : 0, fJobs,
+	    fMemoryWritten ? 1 : 0, fMemoryValue, fGpuId, fPmuStatus,
+	    fJobRawstat, fJobStatus, fAsFault);
+	publish("gpu-jobs", fJobs);
+	publish("gpu-mem-write", fMemoryWritten ? 1 : 0);
+	publish("gpu-as-updated", fAsUpdated ? 1 : 0);
+	publish("gpu-job-rawstat", fJobRawstat);
+	publish("gpu-job-status", fJobStatus);
+}
+
+void
+B2LGPU::tick(OSObject *owner, IOTimerEventSource *sender)
+{
+	B2LGPU *s = (B2LGPU *)owner;
+
+	if (s == NULL) {
+		return;
+	}
+	s->summary("timer");
+	s->fTicks++;
+	/* Once at 30 s, then every two minutes for the first hour. That is
+	 * enough for a pull taken at any point in a normal session without
+	 * making the ring noisy. */
+	if (s->fTicks < 30) {
+		sender->setTimeoutMS(120000);
+	}
+}
+
+bool
+B2LGPU::startTimer()
+{
+	fLoop = getWorkLoop();
+	if (fLoop == NULL) {
+		return false;
+	}
+	fTimer = IOTimerEventSource::timerEventSource(this, &B2LGPU::tick);
+	if (fTimer == NULL) {
+		return false;
+	}
+	if (fLoop->addEventSource(fTimer) != kIOReturnSuccess) {
+		fTimer->release();
+		fTimer = NULL;
+		return false;
+	}
+	fTimer->setTimeoutMS(30000);
+	return true;
 }
 
 /* AS_STATUS_AS_ACTIVE means a command is in flight. It has to be clear before
@@ -261,6 +343,19 @@ B2LGPU::init(OSDictionary *dictionary)
 	fPowered = false;
 	fResetOk = false;
 	fProcessorsUp = false;
+	fLoop = NULL;
+	fTimer = NULL;
+	fTicks = 0;
+	fGpuId = 0;
+	fPmuStatus = 0;
+	fJobRawstat = 0;
+	fJobStatus = 0;
+	fAsFault = 0;
+	fAsUpdated = false;
+	fJobCompleted = false;
+	fMemoryWritten = false;
+	fMemoryValue = 0;
+	fJobs = 0;
 	memset(fTable, 0, sizeof(fTable));
 	memset(&fJob, 0, sizeof(fJob));
 	return true;
@@ -337,6 +432,7 @@ B2LGPU::probePower()
 {
 	uint32_t status = pmuR(B2L_PMU_G3D_STATUS);
 
+	fPmuStatus = status;
 	b2l_diag_record("B2L GPU: PMU G3D_STATUS=0x%08x powered=%u\n",
 	    status, (status & B2L_PMU_G3D_POWERED) ? 1u : 0u);
 	if (status & B2L_PMU_G3D_POWERED) {
@@ -359,6 +455,7 @@ B2LGPU::probePower()
 		IODelay(1);
 	}
 	b2l_diag_record("B2L GPU: after PMU request G3D_STATUS=0x%08x\n", status);
+	fPmuStatus = status;
 	fPowered = (status & B2L_PMU_G3D_POWERED) != 0;
 	if (!fPowered) {
 		b2l_diag_record("B2L GPU: domain stayed off; the block is gated by "
@@ -377,6 +474,7 @@ B2LGPU::dumpRegisters()
 	uint32_t l2Present = r(B2L_GPU_REG_L2_PRESENT);
 	uint32_t stackPresent = r(B2L_GPU_REG_STACK_PRESENT);
 
+	fGpuId = id;
 	publish("gpu-id", id);
 	publish("gpu-arch-major", B2L_GPU_ID_ARCH_MAJOR(id));
 	publish("gpu-arch-minor", B2L_GPU_ID_ARCH_MINOR(id));
@@ -537,7 +635,7 @@ B2LGPU::probeJob()
 	uint64_t *tables[B2L_GPU_MMU_LEVELS];
 	uint64_t tablePa[B2L_GPU_MMU_LEVELS];
 	const uint64_t jobVa = 0x20000000ull;
-	uint32_t rawBefore, affinity;
+	uint32_t affinity;
 
 	/* The bitmap registers are the only authoritative statement that this
 	 * GPU has address space 0 and job slot 0 at all. */
@@ -562,8 +660,16 @@ B2LGPU::probeJob()
 		b2l_diag_record("B2L GPU: job chain allocation failed\n");
 		return false;
 	}
+	if (!allocPage(&fData)) {
+		b2l_diag_record("B2L GPU: job data allocation failed\n");
+		return false;
+	}
+
+	const uint64_t dataVa = jobVa + 0x1000ull;
 
 	if (b2l_gpu_mmu_map(tables, tablePa, jobVa, fJob.pa, 1,
+	    B2L_GPU_MMU_MEMATTR_NON_CACHE) != 0 ||
+	    b2l_gpu_mmu_map(tables, tablePa, dataVa, fData.pa, 1,
 	    B2L_GPU_MMU_MEMATTR_NON_CACHE) != 0) {
 		b2l_diag_record("B2L GPU: page-table build rejected va=0x%llx "
 		    "pa=0x%llx\n", (unsigned long long)jobVa,
@@ -571,16 +677,24 @@ B2LGPU::probeJob()
 		return false;
 	}
 	b2l_diag_record("B2L GPU: page tables l0..l3=0x%llx,0x%llx,0x%llx,0x%llx "
-	    "map va=0x%llx -> pa=0x%llx\n",
+	    "map va=0x%llx -> pa=0x%llx, va=0x%llx -> pa=0x%llx\n",
 	    (unsigned long long)tablePa[0], (unsigned long long)tablePa[1],
 	    (unsigned long long)tablePa[2], (unsigned long long)tablePa[3],
-	    (unsigned long long)jobVa, (unsigned long long)fJob.pa);
+	    (unsigned long long)jobVa, (unsigned long long)fJob.pa,
+	    (unsigned long long)dataVa, (unsigned long long)fData.pa);
 
-	/* One 64-bit NULL job with no successor ends the chain. */
+	/* Slot 0 carries a write-value job that zeroes one dword of the data
+	 * page; slot 1 carries the terminating NULL job. Both descriptors are
+	 * fetched through AS0, so retiring the chain also proves the MMU walks
+	 * translations for data and not just for the chain itself. */
 	{
-		struct b2l_gpu_job_header header;
-		b2l_gpu_job_header_init(&header, B2L_GPU_JOB_NULL, 1, 0);
-		memcpy((void *)fJob.va, &header, sizeof(header));
+		uint8_t *slots = (uint8_t *)fJob.va;
+		struct b2l_gpu_job_header term;
+
+		b2l_gpu_write_value_job(slots, dataVa, B2L_GPU_WRITE_VALUE_ZERO,
+		    0, jobVa + B2L_GPU_JOB_SLOT_SIZE);
+		b2l_gpu_job_header_init(&term, B2L_GPU_JOB_NULL, 1, 0);
+		memcpy(slots + B2L_GPU_JOB_SLOT_SIZE, &term, sizeof(term));
 	}
 	__asm__ volatile("dsb sy" ::: "memory");
 
@@ -613,6 +727,9 @@ B2LGPU::probeJob()
 	}
 	b2l_diag_record("B2L GPU: address space 0 updated, faultstatus=0x%08x\n",
 	    r(B2L_GPU_REG_AS0 + B2L_GPU_AS_FAULTSTATUS));
+	fAsUpdated = true;
+	fAsFault = r(B2L_GPU_REG_AS0 + B2L_GPU_AS_FAULTSTATUS);
+	publish("gpu-as-updated", 1);
 
 	/* Affinity must name at least one shader core or the slot has nowhere
 	 * to run. A NULL job has no tiler work, so no XAFFINITY is written and
@@ -621,11 +738,63 @@ B2LGPU::probeJob()
 	if (affinity == 0) {
 		affinity = 1;
 	}
-	rawBefore = r(B2L_GPU_REG_JOB_RAWSTAT);
+	/* Running the same chain twice proves the slot, the job manager and the
+	 * MMU are reusable after a retired job. Before each submit the CPU
+	 * plants a sentinel in the target dword; a zero read afterwards can only
+	 * have come from the GPU, because the CPU wrote the sentinel through an
+	 * uncached alias and never writes zero there itself. */
+	for (unsigned attempt = 0; attempt < 2; attempt++) {
+		uint32_t raw = 0, jsStatus = 0, value;
+
+		*(volatile uint32_t *)fData.va = 0xdeadbeefu;
+		__asm__ volatile("dsb sy" ::: "memory");
+
+		if (!runJob(jobVa, affinity, &raw, &jsStatus)) {
+			fJobRawstat = raw;
+			fJobStatus = jsStatus;
+			publish("gpu-jobs", fJobs);
+			return false;
+		}
+		__asm__ volatile("dsb sy" ::: "memory");
+		value = *(volatile uint32_t *)fData.va;
+		fMemoryValue = value;
+		fJobs++;
+		fJobCompleted = true;
+		fJobRawstat = raw;
+		fJobStatus = jsStatus;
+		b2l_diag_record("B2L GPU: write-value job %u retired, "
+		    "rawstat=0x%08x js_status=0x%08x target=0x%08x "
+		    "(sentinel was 0xdeadbeef)\n", fJobs, raw, jsStatus, value);
+		if (value != 0) {
+			fMemoryWritten = false;
+			b2l_diag_record("B2L GPU: GPU did not write the target; "
+			    "job retired without moving data\n");
+			publish("gpu-mem-write", 0);
+			return false;
+		}
+		fMemoryWritten = true;
+		publish("gpu-mem-write", 1);
+	}
+	b2l_diag_record("B2L GPU: GPU wrote memory through address space 0 "
+	    "(%u write-value jobs)\n", fJobs);
+	publish("gpu-jobs", fJobs);
+	return true;
+}
+
+/* Submit one chain to slot 0 and wait for the job-status change. Completion
+ * is reported as a change in JOB_RAWSTAT, exactly as the interrupt handler
+ * would see it; the bits are cleared afterwards so the next submit starts
+ * from a known state. On timeout the slot is hard-stopped. */
+bool
+B2LGPU::runJob(uint64_t headVa, uint32_t affinity, uint32_t *rawstat,
+    uint32_t *status)
+{
+	uint32_t rawBefore = r(B2L_GPU_REG_JOB_RAWSTAT);
+
 	/* Same order as kbase_job_hw_submit: head first, then affinity, then
 	 * the per-slot configuration, and the command last. */
-	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_LO, (uint32_t)jobVa);
-	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_HI, (uint32_t)(jobVa >> 32));
+	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_LO, (uint32_t)headVa);
+	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_HI, (uint32_t)(headVa >> 32));
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_AFFIN_NEXT, affinity);
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_AFFIN_NEXT_HI, 0);
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_CONFIG_NEXT,
@@ -643,12 +812,16 @@ B2LGPU::probeJob()
 
 	uint32_t raw = r(B2L_GPU_REG_JOB_RAWSTAT);
 	uint32_t jsStatus = r(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_STATUS);
+	if (rawstat != NULL) {
+		*rawstat = raw;
+	}
+	if (status != NULL) {
+		*status = jsStatus;
+	}
 	b2l_diag_record("B2L GPU: job chain rawstat 0x%08x -> 0x%08x "
 	    "js_status=0x%08x head=0x%08x tail=0x%08x\n", rawBefore, raw,
 	    jsStatus, r(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_LO),
 	    r(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_TAIL_LO));
-	publish("gpu-job-rawstat", raw);
-	publish("gpu-job-status", jsStatus);
 
 	w(B2L_GPU_REG_JOB_CLEAR, raw);
 	if (raw == rawBefore) {
@@ -656,16 +829,12 @@ B2LGPU::probeJob()
 		/* Never leave a chain running on a slot nobody owns. */
 		w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_COMMAND,
 		    B2L_GPU_JS_COMMAND_HARD_STOP);
-		publish("gpu-jobs", 0);
 		return false;
 	}
 	if (jsStatus != 0) {
 		logFault("job");
-		publish("gpu-jobs", 0);
 		return false;
 	}
-	publish("gpu-jobs", 1);
-	b2l_diag_record("B2L GPU: NULL job completed through MMU address space 0\n");
 	return true;
 }
 
@@ -689,10 +858,13 @@ B2LGPU::start(IOService *provider)
 	}
 
 	b2l_diag_record("B2L GPU: probe level %u requested\n", fLevel);
+	startTimer();
 	if (!mapRegions()) {
+		summary("map-failed");
 		return true;
 	}
 	if (!probePower()) {
+		summary("powered-off");
 		return true;
 	}
 
@@ -704,6 +876,7 @@ B2LGPU::start(IOService *provider)
 	if (fGpuMap == NULL) {
 		b2l_diag_record("B2L GPU: 0x%08x not mapped although the domain is "
 		    "powered\n", B2L_GPU_PHYS);
+		summary("map-gpu-failed");
 		return true;
 	}
 	fGpu = (volatile uint32_t *)fGpuMap->getVirtualAddress();
@@ -712,16 +885,27 @@ B2LGPU::start(IOService *provider)
 	if (fLevel >= 2 && bringUp()) {
 		probeJob();
 	}
+	summary("probe-done");
 	return true;
 }
 
 void
 B2LGPU::stop(IOService *provider)
 {
+	if (fTimer != NULL) {
+		fTimer->cancelTimeout();
+		fTimer->disable();
+	}
+	if (fLoop != NULL && fTimer != NULL) {
+		fLoop->removeEventSource(fTimer);
+	}
+	OSSafeReleaseNULL(fTimer);
+	fLoop = NULL;
 	for (unsigned i = 0; i < B2L_GPU_MMU_LEVELS; i++) {
 		freePage(&fTable[i]);
 	}
 	freePage(&fJob);
+	freePage(&fData);
 	OSSafeReleaseNULL(fGpuMap);
 	OSSafeReleaseNULL(fGpuDesc);
 	OSSafeReleaseNULL(fPmuMap);

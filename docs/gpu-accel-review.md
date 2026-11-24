@@ -17,7 +17,7 @@ asks otherwise:
 | :--- | :--- |
 | `b2l_gpu_probe=0` (default) | no MMIO of any kind |
 | `b2l_gpu_probe=1` | read-only: PMU G3D status, `GPU_ID`, feature/readiness/present masks |
-| `b2l_gpu_probe=2` | additionally request `pd-embedded_g3d` through the PMU, soft-reset, power up the core groups, program address space 0 and run one NULL job on slot 0 |
+| `b2l_gpu_probe=2` | additionally request `pd-embedded_g3d` through the PMU, soft-reset, power up the core groups, program address space 0 and run a write-value job chain on slot 0; the GPU zeroes one dword of a private page and the CPU verifies it |
 
 Level 1 writes no register at all, so a device whose G3D domain is already
 powered can be inspected without changing state.
@@ -26,9 +26,12 @@ The probe publishes what it found as IORegistry properties (`gpu-id`,
 `gpu-arch-major`, `gpu-arch-minor`, `gpu-product-major`, `gpu-version-*`,
 `gpu-shader-present`, `gpu-tiler-present`, `gpu-l2-present`,
 `gpu-stack-present`, `gpu-processors-up`, `gpu-reset`, `gpu-job-rawstat`,
-`gpu-job-status`, `gpu-jobs`) and writes the same values to the persistent
-`b2l_diag` log, so the result survives a reboot even when the device later
-hangs.
+`gpu-job-status`, `gpu-jobs`, `gpu-mem-write`) and writes the same values to
+the persistent `b2l_diag` log, so the result survives a reboot even when the
+device later hangs. Because that log is a ring, the service also re-emits a
+one-line `B2L GPU SUMMARY` 30 s after start and then every two minutes for the
+first hour; the cached values make a pull taken late in a session still show
+what the probe found.
 
 ### Safety rules in the code
 
@@ -114,6 +117,15 @@ A boot-arg kernel probe is therefore the honest first milestone: it answers
 whether the domain can be brought up and whether the job manager and MMU work
 on this port at all, with the answer in the persistent log.
 
+The write-value job added after the NULL job is the next rung: it is still not
+a pixel, but it is the GPU moving data. The CPU fills one dword of a private
+page with `0xdeadbeef`, the GPU overwrites it with zero through a second MMU
+translation, and the CPU reads it back. That exercises the same path a blit
+needs — a type-specific payload, a two-slot chain, a data translation distinct
+from the chain translation, and write-back completion — without touching the
+panel. It also gives the fence primitive (`BASE_JD_REQ_V`) that any later blit
+must use to signal scanout.
+
 ## Expected log lines (not yet observed on hardware)
 
 ```
@@ -123,10 +135,12 @@ B2L GPU: ID=0x........ arch=7.0 product=1 version=...
 B2L GPU: model=tNOx(Bifrost) corefeat=... mmufeatures=...
 B2L GPU: soft reset completed
 B2L GPU: ready shader=... tiler=... l2=... stack=...
-B2L GPU: page tables l0..l3=... map va=0x20000000 -> pa=...
+B2L GPU: page tables l0..l3=... map va=0x20000000 -> pa=..., va=0x20001000 -> pa=...
 B2L GPU: address space 0 updated, faultstatus=0x00000000
 B2L GPU: job chain rawstat 0x00000000 -> 0x00000001 js_status=0x00000000 ...
-B2L GPU: NULL job completed through MMU address space 0
+B2L GPU: write-value job 1 retired, ... target=0x00000000 (sentinel was 0xdeadbeef)
+B2L GPU: GPU wrote memory through address space 0 (2 write-value jobs)
+B2L GPU SUMMARY: why=timer level=2 ... mem_write=1 mem_value=0x00000000 ...
 ```
 
 A fault prints `gpu_faultstatus`, `gpu_faultaddr`, `js_status` and the AS fault
@@ -139,13 +153,14 @@ registers instead.
    only new thing is an idle IOService).
 2. Boot with `b2l_gpu_probe=1` and read the log. This alone tells us the
    domain state and the exact `GPU_ID`/feature masks, with no writes.
-3. If the domain is up, `b2l_gpu_probe=2` and check for `AS0 updated` and the
-   NULL-job completion. If the PMU cannot ungate the domain, the next attempt
+3. If the domain is up, `b2l_gpu_probe=2` and check for `AS0 updated` and
+   `gpu-mem-write=1`. If the PMU cannot ungate the domain, the next attempt
    belongs in UEFI before `ExitBootServices`, where the roadmap already
    points.
-4. Only after a NULL job completes is a GPU blit worth designing: it needs
-   tiler job + fragment job + a prebuilt Bifrost shader, plus a fallback to
-   `B2LBlit` when the GPU is absent or faults.
+4. Only after the GPU writes memory is a real blit worth designing: it needs
+   a tiler job + fragment job + a prebuilt Bifrost shader, plus a fallback to
+   `B2LBlit` when the GPU is absent or faults. The write-value chain already
+   establishes the submission and completion path that blit will reuse.
 
 None of this is a claim of acceleration. It is the measurement step that any
 acceleration work has to start from.

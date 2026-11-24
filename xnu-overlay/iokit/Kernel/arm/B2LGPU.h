@@ -64,6 +64,57 @@ b2l_gpu_job_header_type(const struct b2l_gpu_job_header *h)
 	return (unsigned)(h->size_and_type >> 1);
 }
 
+/* --- Write-value job -------------------------------------------------------
+ * A hardware job descriptor is a 32-byte header followed by a type-specific
+ * payload; kbase and panfrost place each descriptor on its own 64-byte slot
+ * and link slots with next_job.
+ *
+ * Write-value is the smallest job that actually moves data: the GPU writes to
+ * `address` (a GPU VA in the job's address space) and nothing else. Type 3
+ * writes zero and is the form documented by the igt tests; type 0 writes
+ * `immediate`. The CPU can therefore prove GPU execution by filling the target
+ * with a sentinel and reading it back after the job retires.
+ *
+ * Layout from panfrost-job.h (mali_payload_write_value) and the public
+ * MALI_WRITE_VALUE_JOB_PAYLOAD definition.
+ */
+#define B2L_GPU_JOB_SLOT_SIZE 64u
+
+enum {
+	B2L_GPU_WRITE_VALUE_IMMEDIATE        = 0,
+	B2L_GPU_WRITE_VALUE_CYCLE_COUNTER    = 1,
+	B2L_GPU_WRITE_VALUE_SYSTEM_TIMESTAMP = 2,
+	B2L_GPU_WRITE_VALUE_ZERO             = 3,
+};
+
+struct b2l_gpu_write_value_payload {
+	uint64_t address;
+	uint32_t value_descriptor;
+	uint32_t reserved;
+	uint64_t immediate;
+} __attribute__((packed));
+
+#define B2L_GPU_WRITE_VALUE_PAYLOAD_SIZE 24u
+
+/* Lay out one complete write-value descriptor in a 64-byte slot. Bytes past
+ * the payload stay zero so a test can compare the whole slot. */
+static inline void
+b2l_gpu_write_value_job(uint8_t *slot, uint64_t address, unsigned type,
+    uint64_t immediate, uint64_t next)
+{
+	struct b2l_gpu_job_header h;
+	struct b2l_gpu_write_value_payload p;
+
+	memset(slot, 0, B2L_GPU_JOB_SLOT_SIZE);
+	b2l_gpu_job_header_init(&h, B2L_GPU_JOB_WRITE_VALUE, 1, next);
+	memset(&p, 0, sizeof(p));
+	p.address = address;
+	p.value_descriptor = type & 0x7u;
+	p.immediate = immediate;
+	memcpy(slot, &h, sizeof(h));
+	memcpy(slot + sizeof(h), &p, sizeof(p));
+}
+
 /* --- Stage-1 AArch64 4 KiB page tables (AS_TRANSCFG_ADRMODE_AARCH64_4K) ----
  * Valid table entries at levels 0..2 carry type 1, leaf entries at level 3
  * carry type 3. Bits 4:2 select one of the eight attribute bytes programmed

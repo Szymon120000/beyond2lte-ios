@@ -55,6 +55,43 @@ test_job_header(void)
 }
 
 static void
+test_write_value_job(void)
+{
+	uint8_t slot[B2L_GPU_JOB_SLOT_SIZE];
+	const struct b2l_gpu_job_header *h = (const void *)slot;
+	const struct b2l_gpu_write_value_payload *p =
+	    (const void *)(slot + B2L_GPU_JOB_HEADER_SIZE);
+
+	static_assert(sizeof(struct b2l_gpu_write_value_payload) ==
+	    B2L_GPU_WRITE_VALUE_PAYLOAD_SIZE, "payload layout");
+	assert(B2L_GPU_JOB_HEADER_SIZE + B2L_GPU_WRITE_VALUE_PAYLOAD_SIZE <=
+	    B2L_GPU_JOB_SLOT_SIZE);
+
+	memset(slot, 0xa5, sizeof(slot));
+	b2l_gpu_write_value_job(slot, 0x20001000ull, B2L_GPU_WRITE_VALUE_ZERO,
+	    0, 0x20000040ull);
+	assert(b2l_gpu_job_header_type(h) == B2L_GPU_JOB_WRITE_VALUE);
+	assert(h->size_and_type == 0x05);
+	assert(h->next_job == 0x20000040ull);
+	assert(p->address == 0x20001000ull);
+	assert(p->value_descriptor == B2L_GPU_WRITE_VALUE_ZERO);
+	assert(p->reserved == 0 && p->immediate == 0);
+	/* The whole 64-byte slot is written; no stale bytes leak to the GPU. */
+	for (unsigned i = B2L_GPU_JOB_HEADER_SIZE + B2L_GPU_WRITE_VALUE_PAYLOAD_SIZE;
+	    i < B2L_GPU_JOB_SLOT_SIZE; i++) {
+		assert(slot[i] == 0);
+	}
+
+	/* Immediate form carries the value in the last eight bytes. */
+	b2l_gpu_write_value_job(slot, 0x20002000ull, B2L_GPU_WRITE_VALUE_IMMEDIATE,
+	    0x1122334455667788ull, 0);
+	assert(p->address == 0x20002000ull);
+	assert(p->value_descriptor == B2L_GPU_WRITE_VALUE_IMMEDIATE);
+	assert(p->immediate == 0x1122334455667788ull);
+	assert(h->next_job == 0);
+}
+
+static void
 test_page_entries(void)
 {
 	/* Table entries ignore the low 12 bits of the pointer and set AF+type. */
@@ -167,6 +204,7 @@ int
 main(void)
 {
 	test_job_header();
+	test_write_value_job();
 	test_page_entries();
 	test_index_split();
 	test_mapping();
