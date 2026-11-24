@@ -412,7 +412,9 @@ B2LGPU::dumpRegisters()
 	fProcessorsUp = shaderPresent != 0 &&
 	    (r(B2L_GPU_REG_SHADER_READY) & shaderPresent) == shaderPresent &&
 	    (r(B2L_GPU_REG_TILER_READY) & tilerPresent) == tilerPresent &&
-	    (r(B2L_GPU_REG_L2_READY) & l2Present) == l2Present;
+	    (r(B2L_GPU_REG_L2_READY) & l2Present) == l2Present &&
+	    (stackPresent == 0 ||
+	    (r(B2L_GPU_REG_STACK_READY) & stackPresent) == stackPresent);
 	publish("gpu-processors-up", fProcessorsUp ? 1 : 0);
 }
 
@@ -459,23 +461,38 @@ B2LGPU::bringUp()
 	l2Present = r(B2L_GPU_REG_L2_PRESENT);
 	stackPresent = r(B2L_GPU_REG_STACK_PRESENT);
 
-	if ((r(B2L_GPU_REG_SHADER_READY) & shaderPresent) != shaderPresent) {
-		w(B2L_GPU_REG_SHADER_PWRON, shaderPresent);
-	}
-	if ((r(B2L_GPU_REG_TILER_READY) & tilerPresent) != tilerPresent) {
+	/* Power-up order is not arbitrary. kbase powers the tiler first because
+	 * that also powers L2 slice 0 (kbase_pm_l2_update_state), waits for the
+	 * L2 group to be ready, then brings up the core stacks and only after
+	 * those the shader cores (kbase_pm_shaders_update_state). The hardware
+	 * power controller latches a request for a group whose parent is still
+	 * off, so requesting shaders first can leave them never ready. */
+	if (tilerPresent != 0 &&
+	    (r(B2L_GPU_REG_TILER_READY) & tilerPresent) != tilerPresent) {
 		w(B2L_GPU_REG_TILER_PWRON, tilerPresent);
 	}
-	if ((r(B2L_GPU_REG_L2_READY) & l2Present) != l2Present) {
-		w(B2L_GPU_REG_L2_PWRON, l2Present);
+	/* Slice 0 of L2 comes up with the tiler; any further slices are
+	 * requested explicitly, exactly as kbase does. If there is no tiler,
+	 * ask for all of L2 instead. */
+	uint32_t l2Request = tilerPresent != 0 ? (l2Present & ~1u) : l2Present;
+	if (l2Request != 0 &&
+	    (r(B2L_GPU_REG_L2_READY) & l2Present) != l2Present) {
+		w(B2L_GPU_REG_L2_PWRON, l2Request);
 	}
+	pollReg(B2L_GPU_REG_TILER_READY, tilerPresent, tilerPresent, 10000);
+	pollReg(B2L_GPU_REG_L2_READY, l2Present, l2Present, 10000);
+
 	if (stackPresent != 0 &&
 	    (r(B2L_GPU_REG_STACK_READY) & stackPresent) != stackPresent) {
 		w(B2L_GPU_REG_STACK_PWRON, stackPresent);
+		pollReg(B2L_GPU_REG_STACK_READY, stackPresent, stackPresent, 10000);
 	}
-
-	pollReg(B2L_GPU_REG_SHADER_READY, shaderPresent, shaderPresent, 10000);
-	pollReg(B2L_GPU_REG_TILER_READY, tilerPresent, tilerPresent, 10000);
-	pollReg(B2L_GPU_REG_L2_READY, l2Present, l2Present, 10000);
+	if (shaderPresent != 0 &&
+	    (r(B2L_GPU_REG_SHADER_READY) & shaderPresent) != shaderPresent) {
+		w(B2L_GPU_REG_SHADER_PWRON, shaderPresent);
+		pollReg(B2L_GPU_REG_SHADER_READY, shaderPresent, shaderPresent,
+		    10000);
+	}
 
 	b2l_diag_record("B2L GPU: ready shader=0x%08x tiler=0x%08x l2=0x%08x "
 	    "stack=0x%08x\n", r(B2L_GPU_REG_SHADER_READY),
@@ -484,7 +501,9 @@ B2LGPU::bringUp()
 	fProcessorsUp = shaderPresent != 0 &&
 	    (r(B2L_GPU_REG_SHADER_READY) & shaderPresent) == shaderPresent &&
 	    (r(B2L_GPU_REG_TILER_READY) & tilerPresent) == tilerPresent &&
-	    (r(B2L_GPU_REG_L2_READY) & l2Present) == l2Present;
+	    (r(B2L_GPU_REG_L2_READY) & l2Present) == l2Present &&
+	    (stackPresent == 0 ||
+	    (r(B2L_GPU_REG_STACK_READY) & stackPresent) == stackPresent);
 	publish("gpu-processors-up", fProcessorsUp ? 1 : 0);
 	if (!fProcessorsUp) {
 		b2l_diag_record("B2L GPU: core groups did not all become ready; "
