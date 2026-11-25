@@ -58,6 +58,9 @@ extern "C" int PE_parse_boot_argn(const char*,void*,int);
  * alias is uncached and the GPU sees every store without cache maintenance. */
 extern "C" vm_offset_t ml_io_map(vm_offset_t,vm_size_t);
 extern "C" void ml_io_unmap(vm_offset_t,vm_size_t);
+/* The panel shows the early console, not IOLog. Mirror every risky MMU/job
+ * step there so a hard bus stall still identifies the exact register. */
+extern "C" void b2l_early_trace(const char *, ...);
 
 /* --- Physical resources --------------------------------------------------- */
 #define B2L_GPU_PHYS            0x18500000u   /* mali@18500000, 20 KiB */
@@ -705,6 +708,8 @@ B2LGPU::probeJob()
 	    (unsigned long long)tablePa[2], (unsigned long long)tablePa[3],
 	    (unsigned long long)jobVa, (unsigned long long)fJob.pa,
 	    (unsigned long long)dataVa, (unsigned long long)fData.pa);
+	b2l_early_trace("B2L GPU: mmu tables ready job=0x%llx data=0x%llx\n",
+	    (unsigned long long)jobVa, (unsigned long long)dataVa);
 
 	/* Slot 0 carries a write-value job that zeroes one dword of the data
 	 * page; slot 1 carries the terminating NULL job. Both descriptors are
@@ -724,6 +729,7 @@ B2LGPU::probeJob()
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_TRANSTAB_LO,
 	    (uint32_t)(tablePa[0] & 0xfffff000ull));
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_TRANSTAB_HI, (uint32_t)(tablePa[0] >> 32));
+	b2l_early_trace("B2L GPU: AS0 transtab written\n");
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_TRANSCFG_LO,
 	    B2L_GPU_AS_TRANSCFG_VALUE);
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_TRANSCFG_HI, 0);
@@ -731,23 +737,29 @@ B2LGPU::probeJob()
 	    B2L_GPU_AS_MEMATTR_LO);
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_MEMATTR_HI_REG,
 	    B2L_GPU_AS_MEMATTR_HI);
+	b2l_early_trace("B2L GPU: AS0 transcfg/memattr written\n");
 	/* kbase waits for AS_STATUS_AS_ACTIVE to clear before writing a command
 	 * and polls it afterwards until the command has retired. The bit means
 	 * "command in flight", not "address space usable", so waiting for it to
 	 * become set would race the hardware. */
+	b2l_early_trace("B2L GPU: AS0 idle wait before update\n");
 	if (!waitAsIdle()) {
 		b2l_diag_record("B2L GPU: address space 0 busy before update, "
 		    "status=0x%08x\n", r(B2L_GPU_REG_AS0 + B2L_GPU_AS_STATUS));
+		b2l_early_trace("B2L GPU: AS0 busy before update\n");
 		return false;
 	}
+	b2l_early_trace("B2L GPU: AS0 command update\n");
 	w(B2L_GPU_REG_AS0 + B2L_GPU_AS_COMMAND, B2L_GPU_AS_COMMAND_UPDATE);
 	if (!waitAsIdle()) {
 		b2l_diag_record("B2L GPU: address space 0 update did not retire, "
 		    "status=0x%08x faultstatus=0x%08x\n",
 		    r(B2L_GPU_REG_AS0 + B2L_GPU_AS_STATUS),
 		    r(B2L_GPU_REG_AS0 + B2L_GPU_AS_FAULTSTATUS));
+		b2l_early_trace("B2L GPU: AS0 update did not retire\n");
 		return false;
 	}
+	b2l_early_trace("B2L GPU: AS0 update retired\n");
 	b2l_diag_record("B2L GPU: address space 0 updated, faultstatus=0x%08x\n",
 	    r(B2L_GPU_REG_AS0 + B2L_GPU_AS_FAULTSTATUS));
 	fAsUpdated = true;
@@ -773,6 +785,7 @@ B2LGPU::probeJob()
 
 		*(volatile uint32_t *)fData.va = 0xdeadbeefu;
 		__asm__ volatile("dsb sy" ::: "memory");
+		b2l_early_trace("B2L GPU: run attempt %u\n", attempt + 1);
 
 		if (!runJob(jobVa, affinity, &raw, &jsStatus)) {
 			fJobRawstat = raw;
@@ -782,6 +795,8 @@ B2LGPU::probeJob()
 		}
 		__asm__ volatile("dsb sy" ::: "memory");
 		value = *(volatile uint32_t *)fData.va;
+		b2l_early_trace("B2L GPU: attempt %u target=0x%08x\n",
+		    attempt + 1, value);
 		fMemoryValue = value;
 		fJobs++;
 		fJobCompleted = true;
@@ -820,6 +835,8 @@ B2LGPU::runJob(uint64_t headVa, uint32_t affinity, uint32_t *rawstat,
 
 	/* Same order as kbase_job_hw_submit: head first, then affinity, then
 	 * the per-slot configuration, and the command last. */
+	b2l_early_trace("B2L GPU: JS submit head=0x%llx affin=0x%08x\n",
+	    (unsigned long long)headVa, affinity);
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_LO, (uint32_t)headVa);
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_HEAD_NEXT_HI, (uint32_t)(headVa >> 32));
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_AFFIN_NEXT, affinity);
@@ -827,18 +844,26 @@ B2LGPU::runJob(uint64_t headVa, uint32_t affinity, uint32_t *rawstat,
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_CONFIG_NEXT,
 	    B2L_GPU_JS_CONFIG_AS(0) | B2L_GPU_JS_CONFIG_FLUSH_START |
 	    B2L_GPU_JS_CONFIG_FLUSH_END | B2L_GPU_JS_CONFIG_THREAD_PRI);
+	b2l_early_trace("B2L GPU: JS config written, starting\n");
 	w(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_COMMAND_NEXT, B2L_GPU_JS_COMMAND_START);
+	b2l_early_trace("B2L GPU: JS start written\n");
 
 	/* Any change in the raw job status is the completion edge. */
+	uint32_t raw = rawBefore;
 	for (unsigned i = 0; i < 100000; i++) {
-		if (r(B2L_GPU_REG_JOB_RAWSTAT) != rawBefore) {
+		raw = r(B2L_GPU_REG_JOB_RAWSTAT);
+		if (i == 0) {
+			b2l_early_trace("B2L GPU: JS first raw=0x%08x\n", raw);
+		}
+		if (raw != rawBefore) {
 			break;
 		}
 		IODelay(1);
 	}
+	b2l_early_trace("B2L GPU: JS poll done raw=0x%08x\n", raw);
 
-	uint32_t raw = r(B2L_GPU_REG_JOB_RAWSTAT);
 	uint32_t jsStatus = r(B2L_GPU_REG_SLOT0 + B2L_GPU_JS_STATUS);
+	b2l_early_trace("B2L GPU: JS status=0x%08x\n", jsStatus);
 	if (rawstat != NULL) {
 		*rawstat = raw;
 	}
