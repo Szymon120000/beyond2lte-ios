@@ -14,7 +14,9 @@
  *                     domain is powered.
  *   b2l_gpu_probe=4   additionally soft-reset and power up the core groups.
  *   b2l_gpu_probe=5   additionally run the write-value job chain and verify
- *                     that the GPU wrote its private data page.
+ *                     that the GPU wrote its private data page. The job is
+ *                     deferred to the 30 s timer so the persistent log is
+ *                     already open if it stalls.
  *
  * Every level also prints its key values through IOLog, so a boot that wedges
  * on a GPU register still shows the last completed step on the panel.
@@ -48,6 +50,7 @@
 #include <IOKit/IOBufferMemoryDescriptor.h>
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
+#include <kern/thread.h>
 #include <libkern/c++/OSNumber.h>
 #include <arm64/b2l_diag.h>
 #include "B2LGPU.h"
@@ -183,6 +186,7 @@ class B2LGPU : public IOService {
 	IOWorkLoop         *fLoop;
 	IOTimerEventSource *fTimer;
 	unsigned            fTicks;
+	bool                fJobPending;
 	uint32_t            fGpuId;
 	uint32_t            fPmuStatus;
 	uint32_t            fJobRawstat;
@@ -223,6 +227,8 @@ class B2LGPU : public IOService {
 	void maskInterrupts(void);
 	bool bringUp(void);
 	bool probeJob(void);
+	void runDeferredJob(void);
+	static void jobThread(void *param, wait_result_t result);
 	bool runJob(uint64_t headVa, uint32_t affinity, uint32_t *rawstat,
 	    uint32_t *status);
 	void logFault(const char *what);
@@ -289,12 +295,45 @@ B2LGPU::tick(OSObject *owner, IOTimerEventSource *sender)
 	}
 	s->summary("timer");
 	s->fTicks++;
+	if (s->fJobPending) {
+		thread_t thread = NULL;
+		s->fJobPending = false;
+		s->retain();
+		if (kernel_thread_start(&B2LGPU::jobThread, s, &thread) ==
+		    KERN_SUCCESS) {
+			thread_deallocate(thread);
+		} else {
+			s->release();
+			b2l_diag_record("B2L GPU: deferred job thread failed\n");
+		}
+	}
 	/* Once at 30 s, then every two minutes for the first hour. That is
 	 * enough for a pull taken at any point in a normal session without
 	 * making the ring noisy. */
 	if (s->fTicks < 30) {
 		sender->setTimeoutMS(120000);
 	}
+}
+
+void
+B2LGPU::jobThread(void *param, wait_result_t)
+{
+	B2LGPU *s = (B2LGPU *)param;
+
+	if (s != NULL) {
+		s->runDeferredJob();
+		s->release();
+	}
+	thread_terminate(current_thread());
+}
+
+void
+B2LGPU::runDeferredJob()
+{
+	b2l_diag_record("B2L GPU: deferred job start level %u\n", fLevel);
+	b2l_early_trace("B2L GPU: deferred job start level %u\n", fLevel);
+	probeJob();
+	summary("job-done");
 }
 
 bool
@@ -355,6 +394,7 @@ B2LGPU::init(OSDictionary *dictionary)
 	fLoop = NULL;
 	fTimer = NULL;
 	fTicks = 0;
+	fJobPending = false;
 	fGpuId = 0;
 	fPmuStatus = 0;
 	fJobRawstat = 0;
@@ -947,7 +987,13 @@ B2LGPU::start(IOService *provider)
 
 	dumpRegisters();
 	if (fLevel >= 4 && bringUp() && fLevel >= 5) {
-		probeJob();
+		/* The job touches the GPU MMU and the job manager while the boot
+		 * CPU is still bringing secondaries online, i.e. before the
+		 * persistent log exists. A stall there leaves no disk evidence,
+		 * so run it from the 30 s timer instead, when logging is up. */
+		fJobPending = true;
+		b2l_diag_record("B2L GPU: job deferred to the 30 s timer\n");
+		b2l_early_trace("B2L GPU: job deferred to the 30 s timer\n");
 	}
 	summary("probe-done");
 	return true;
