@@ -51,6 +51,10 @@
 #include <IOKit/IOWorkLoop.h>
 #include <IOKit/IOTimerEventSource.h>
 #include <kern/thread.h>
+#include <vm/vm_kern.h>
+#include <vm/vm_kern_xnu.h>
+#include <mach/vm_param.h>
+#include <vm/pmap.h>
 #include <libkern/c++/OSNumber.h>
 #include <arm64/b2l_diag.h>
 #include "B2LGPU.h"
@@ -60,6 +64,10 @@ extern "C" int PE_parse_boot_argn(const char*,void*,int);
 /* Device mappings for the page tables and job chain. VM_WIMG_IO, so the CPU
  * alias is uncached and the GPU sees every store without cache maintenance. */
 extern "C" vm_offset_t ml_io_map(vm_offset_t,vm_size_t);
+/* Declared locally: the iokit build uses the exported header set, which does
+ * not carry these two kernel-internal vm symbols. */
+extern "C" pmap_t kernel_pmap;
+extern "C" ppnum_t pmap_find_phys(pmap_t, addr64_t);
 extern "C" void ml_io_unmap(vm_offset_t,vm_size_t);
 /* The panel shows the early console, not IOLog. Mirror every risky MMU/job
  * step there so a hard bus stall still identifies the exact register. */
@@ -169,7 +177,7 @@ enum {
 /* One 4 KiB page of GPU-visible memory: a physically contiguous buffer plus an
  * uncached kernel mapping of the same bytes. */
 struct B2LGPUPage {
-	IOBufferMemoryDescriptor *buf;
+	vm_offset_t               kva;
 	vm_offset_t               map;
 	uint64_t                  pa;
 	volatile void            *va;
@@ -298,6 +306,7 @@ B2LGPU::tick(OSObject *owner, IOTimerEventSource *sender)
 	if (s->fJobPending) {
 		thread_t thread = NULL;
 		s->fJobPending = false;
+		b2l_diag_record("B2L GPU: timer fired; starting job thread\n");
 		s->retain();
 		if (kernel_thread_start(&B2LGPU::jobThread, s, &thread) ==
 		    KERN_SUCCESS) {
@@ -332,7 +341,8 @@ B2LGPU::runDeferredJob()
 {
 	b2l_diag_record("B2L GPU: deferred job start level %u\n", fLevel);
 	b2l_early_trace("B2L GPU: deferred job start level %u\n", fLevel);
-	probeJob();
+	bool ok = probeJob();
+	b2l_diag_record("B2L GPU: deferred job finished ok=%u\n", ok ? 1 : 0);
 	summary("job-done");
 }
 
@@ -353,6 +363,7 @@ B2LGPU::startTimer()
 		return false;
 	}
 	fTimer->setTimeoutMS(30000);
+	b2l_diag_record("B2L GPU: 30 s timer armed\n");
 	return true;
 }
 
@@ -414,30 +425,35 @@ B2LGPU::init(OSDictionary *dictionary)
 bool
 B2LGPU::allocPage(B2LGPUPage *page)
 {
-	IOBufferMemoryDescriptor *buf;
-	IOByteCount length = 0;
-	addr64_t phys;
+	vm_offset_t kva = 0;
+	ppnum_t pn;
 
-	/* A single 4 KiB page, physically contiguous and page aligned, so the
-	 * GPU can walk it and store into it without scatter-gather support. */
-	buf = IOBufferMemoryDescriptor::withOptions(
-	    kIODirectionInOut | kIOMemoryPhysicallyContiguous,
-	    B2L_GPU_MMU_PAGE_SIZE, B2L_GPU_MMU_PAGE_SIZE);
-	if (buf == NULL) {
+	/* Allocate through kmem_alloc_contig, the same path the UFS transport
+	 * uses on this port. IOBufferMemoryDescriptor's physically-contiguous
+	 * mode reaches pmap_map_high_window_bd here, which panics with an
+	 * unaligned data abort on this SoC; the kernel-map allocator does not. */
+	if (kmem_alloc_contig(kernel_map, &kva, B2L_GPU_MMU_PAGE_SIZE,
+	    B2L_GPU_MMU_PAGE_SIZE - 1, 0, 0,
+	    (kma_flags_t)(KMA_DATA | KMA_ZERO | KMA_PERMANENT),
+	    VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS || kva == 0) {
 		return false;
 	}
-	phys = buf->getPhysicalSegment(0, &length);
-	if (phys == 0 || length < B2L_GPU_MMU_PAGE_SIZE) {
-		buf->release();
+	pn = pmap_find_phys(kernel_pmap, (addr64_t)kva);
+	if (pn == 0) {
+		kmem_free(kernel_map, kva, B2L_GPU_MMU_PAGE_SIZE);
 		return false;
 	}
-	page->map = ml_io_map((vm_offset_t)phys, B2L_GPU_MMU_PAGE_SIZE);
+	page->pa = ptoa_64(pn);
+	page->kva = kva;
+	/* The GPU writes through its own MMU; expose the same page to the CPU
+	 * uncached so a verification read cannot come from a stale line. */
+	page->map = ml_io_map((vm_offset_t)page->pa, B2L_GPU_MMU_PAGE_SIZE);
 	if (page->map == 0) {
-		buf->release();
+		kmem_free(kernel_map, kva, B2L_GPU_MMU_PAGE_SIZE);
+		page->kva = 0;
+		page->pa = 0;
 		return false;
 	}
-	page->buf = buf;
-	page->pa = (uint64_t)phys;
 	page->va = (volatile void *)page->map;
 	memset((void *)page->va, 0, B2L_GPU_MMU_PAGE_SIZE);
 	return true;
@@ -450,9 +466,9 @@ B2LGPU::freePage(B2LGPUPage *page)
 		ml_io_unmap(page->map, B2L_GPU_MMU_PAGE_SIZE);
 		page->map = 0;
 	}
-	if (page->buf != NULL) {
-		page->buf->release();
-		page->buf = NULL;
+	if (page->kva != 0) {
+		kmem_free(kernel_map, page->kva, B2L_GPU_MMU_PAGE_SIZE);
+		page->kva = 0;
 	}
 	page->va = NULL;
 	page->pa = 0;
@@ -956,6 +972,9 @@ B2LGPU::start(IOService *provider)
 	b2l_diag_record("B2L GPU: probe level %u requested\n", fLevel);
 	IOLog("B2L GPU: probe level %u requested\n", fLevel);
 	startTimer();
+	if (fTimer == NULL) {
+		b2l_diag_record("B2L GPU: no workloop timer; deferred job cannot run\n");
+	}
 	if (!mapRegions()) {
 		summary("map-failed");
 		return true;
